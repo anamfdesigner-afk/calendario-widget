@@ -4,13 +4,25 @@
   <meta charset="UTF-8">
   <title>Calendário Widget</title>
   <style>
-    body { font-family: sans-serif; padding: 20px; }
-    #slotsList button { margin:5px; padding:8px 12px; cursor:pointer; }
-    #slotsList p { margin:5px 0; }
-    #slots { margin-top:15px; }
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+    }
+    #slotsList button {
+      margin: 5px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    #slotsList p {
+      margin: 5px 0;
+    }
+    #slots {
+      margin-top: 15px;
+    }
   </style>
 </head>
 <body>
+
   <label for="datePicker">Escolhe um dia:</label>
   <input type="date" id="datePicker">
 
@@ -19,7 +31,7 @@
     <div id="slotsList"></div>
   </div>
 
-  <!-- Link para o JS -->
+  <!-- Script -->
   <script src="widget.js"></script>
 </body>
 </html>
