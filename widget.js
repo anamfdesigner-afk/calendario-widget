@@ -12,6 +12,8 @@ const SLOTS = [
   { time: "10:15-11:00", vagas: 2 }
 ];
 
+let reservado = false;
+
 // ===============================
 // ELEMENTOS DOM
 // ===============================
@@ -34,6 +36,7 @@ datePicker.min = today;
 datePicker.addEventListener("change", async () => {
   const selectedDate = datePicker.value;
 
+  reservado = false;
   slotsDiv.hidden = false;
   slotsList.innerHTML = "";
 
@@ -47,14 +50,22 @@ datePicker.addEventListener("change", async () => {
         r => r.data === selectedDate && r.horário === slot.time
       ).length;
 
-      if (usadas >= slot.vagas) {
+      const restantes = slot.vagas - usadas;
+
+      if (restantes <= 0) {
         const p = document.createElement("p");
         p.textContent = `${slot.time} — Sem vagas`;
         slotsList.appendChild(p);
       } else {
         const btn = document.createElement("button");
-        btn.textContent = `${slot.time}`;
-        btn.onclick = () => reservar(selectedDate, slot.time);
+        btn.textContent = `${slot.time} (${restantes} vagas)`;
+
+        btn.onclick = () => {
+          if (!reservado) {
+            reservar(selectedDate, slot.time, btn);
+          }
+        };
+
         slotsList.appendChild(btn);
       }
     });
@@ -68,7 +79,22 @@ datePicker.addEventListener("change", async () => {
 // RESERVAR + ENVIAR AO JOTFORM
 // ===============================
 
-async function reservar(date, slot) {
+async function reservar(date, slot, clickedButton) {
+  reservado = true;
+
+  // Desactivar todos os botões
+  const buttons = slotsList.querySelectorAll("button");
+  buttons.forEach(btn => (btn.disabled = true));
+
+  // Feedback visual no botão
+  clickedButton.textContent = `${slot} — Selecionado`;
+
+  // Feedback visual geral
+  const status = document.createElement("p");
+  status.textContent = `Selecionado: ${date} às ${slot}`;
+  status.style.marginTop = "12px";
+  slotsDiv.appendChild(status);
+
   try {
     // 1️⃣ Guardar no Sheety
     await fetch(SHEETY_URL, {
@@ -82,13 +108,17 @@ async function reservar(date, slot) {
       })
     });
 
-    // 2️⃣ Enviar resposta ao Jotform
+    // 2️⃣ Enviar resposta ao Jotform (ESTADO + SUBMIT)
     const value = `${date} | ${slot}`;
 
     if (window.JotFormCustomWidget) {
+      // mantém estado (preview / email builder)
+      JotFormCustomWidget.sendData({
+        value: value
+      });
+
+      // permite submissão
       JotFormCustomWidget.sendSubmit(value);
-    } else {
-      console.error("JotFormCustomWidget não disponível");
     }
   } catch (err) {
     console.error("Erro ao reservar", err);
