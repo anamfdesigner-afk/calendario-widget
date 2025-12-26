@@ -13,6 +13,7 @@ const SLOTS = [
 ];
 
 let reservado = false;
+let respostaFinal = "";
 
 // ===============================
 // ELEMENTOS DOM
@@ -103,22 +104,22 @@ async function reservar(date, slot, clickedButton) {
       body: JSON.stringify({
         folha1: {
           data: date,
-          horário: slot
+          horario: slot
         }
       })
     });
 
-    // 2️⃣ Enviar resposta ao Jotform (ESTADO + SUBMIT)
-    const value = `${date} | ${slot}`;
+    // 2️⃣ Guardar valor para Jotform
+    respostaFinal = `${date} | ${slot}`;
 
     if (window.JotFormCustomWidget) {
-      // mantém estado (preview / email builder)
+      // Estado para preview / email builder
       JotFormCustomWidget.sendData({
-        value: value
+        value: respostaFinal
       });
 
-      // permite submissão
-      JotFormCustomWidget.sendSubmit(value);
+      // Submissão final
+      JotFormCustomWidget.sendSubmit(respostaFinal);
     }
   } catch (err) {
     console.error("Erro ao reservar", err);
@@ -126,3 +127,14 @@ async function reservar(date, slot, clickedButton) {
   }
 }
 
+// ===============================
+// GET DATA (necessário para Email Builder / PDFs)
+// ===============================
+
+if (window.JotFormCustomWidget) {
+  JotFormCustomWidget.subscribe("getData", function () {
+    return {
+      value: respostaFinal
+    };
+  });
+}
