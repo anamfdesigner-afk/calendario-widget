@@ -5,8 +5,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const SHEETY_URL =
     "https://api.sheety.co/76a6d2f0ca2083ffa98601cdbdc2e82c/boCalendarioMontecarmo/folha1";
 
-  const SHEETY_TOKEN = "COLOCA_AQUI_O_TOKEN_REAL_DO_SHEETY";
-
   const SLOTS = [
     { time: "08:00-08:45", vagas: 3 },
     { time: "08:45-09:30", vagas: 2 },
@@ -40,9 +38,8 @@ document.addEventListener("DOMContentLoaded", () => {
     slotsList.innerHTML = "";
 
     try {
-      const response = await fetch(SHEETY_URL, {
-        headers: { "Authorization": `Bearer ${SHEETY_TOKEN}` }
-      });
+      // Fetch sem autenticação
+      const response = await fetch(SHEETY_URL);
       const data = await response.json();
       const reservas = data.folha1 || [];
 
@@ -94,13 +91,10 @@ document.addEventListener("DOMContentLoaded", () => {
     slotsDiv.appendChild(status);
 
     try {
-      // 1️⃣ Guardar no Sheety
+      // Guardar no Sheety sem autenticação
       await fetch(SHEETY_URL, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SHEETY_TOKEN}`
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           folha1: {
             data: date,
@@ -109,16 +103,11 @@ document.addEventListener("DOMContentLoaded", () => {
         })
       });
 
-      // 2️⃣ Guardar valor para Jotform
+      // Guardar valor para Jotform
       respostaFinal = `${date} | ${slot}`;
 
       if (window.JotFormCustomWidget) {
-        // Estado para preview / email builder
-        JotFormCustomWidget.sendData({
-          value: respostaFinal
-        });
-
-        // Submissão final
+        JotFormCustomWidget.sendData({ value: respostaFinal });
         JotFormCustomWidget.sendSubmit(respostaFinal);
       }
     } catch (err) {
@@ -132,9 +121,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===============================
   if (window.JotFormCustomWidget) {
     JotFormCustomWidget.subscribe("getData", function () {
-      return {
-        value: respostaFinal
-      };
+      return { value: respostaFinal };
     });
   }
 });
