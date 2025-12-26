@@ -47,7 +47,7 @@ datePicker.addEventListener("change", async () => {
 
     SLOTS.forEach(slot => {
       const usadas = reservas.filter(
-        r => r.data === selectedDate && r.horário === slot.time
+        r => r.data === selectedDate && r.horario === slot.time
       ).length;
 
       const restantes = slot.vagas - usadas;
@@ -125,3 +125,4 @@ async function reservar(date, slot, clickedButton) {
     alert("Erro ao reservar. Tenta novamente.");
   }
 }
+
