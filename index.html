@@ -3,24 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <title>Calendário</title>
-
-  <!-- Jotform Widget API -->
-  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
-
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <div id="calendar">
-    <h3>Escolhe um dia</h3>
-    <input type="date" id="datePicker">
-  </div>
+  <div id="calendar"></div>
+  <div id="slots"></div>
 
-  <div id="slots" hidden>
-    <h3>Escolhe um horário</h3>
-    <div id="slotsList"></div>
-  </div>
+  <!-- IMPORTANTE -->
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
+  <script src="script.js"></script>
 
-  <script src="widget.js"></script>
 </body>
 </html>
+
