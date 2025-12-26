@@ -1,19 +1,37 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8" />
-  <title>Calendário</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta charset="UTF-8">
+  <title>Calendário Widget</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+    }
+    #slotsList button {
+      margin: 5px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    #slotsList p {
+      margin: 5px 0;
+    }
+    #slots {
+      margin-top: 15px;
+    }
+  </style>
 </head>
 <body>
 
-  <div id="calendar"></div>
-  <div id="slots"></div>
+  <label for="datePicker">Escolhe um dia:</label>
+  <input type="date" id="datePicker">
 
-  <!-- IMPORTANTE -->
-  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
-  <script src="script.js"></script>
+  <div id="slots" hidden>
+    <h4>Escolhe um horário:</h4>
+    <div id="slotsList"></div>
+  </div>
 
+  <!-- Script -->
+  <script src="widget.js"></script>
 </body>
 </html>
-
