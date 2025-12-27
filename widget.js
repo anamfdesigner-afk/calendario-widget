@@ -38,13 +38,11 @@ document.addEventListener("DOMContentLoaded", () => {
     slotsList.innerHTML = "";
 
     try {
-      // Fetch sem autenticação
       const response = await fetch(SHEETY_URL);
       const data = await response.json();
       const reservas = data.folha1 || [];
 
       SLOTS.forEach(slot => {
-        // Contar quantas vagas já foram usadas para este dia e horário
         const usadas = reservas.filter(
           r => r.data === selectedDate && r.horario && r.horario === slot.time
         ).length;
@@ -75,47 +73,37 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===============================
   // RESERVAR + ENVIAR AO JOTFORM
   // ===============================
-  async function reservar(date, slot, clickedButton) {
+  function reservar(date, slot, clickedButton) {
     reservado = true;
 
     // Desactivar todos os botões
     const buttons = slotsList.querySelectorAll("button");
     buttons.forEach(btn => (btn.disabled = true));
 
-    // Feedback visual no botão
+    // Feedback visual
     clickedButton.textContent = `${slot} — Selecionado`;
-
-    // Feedback visual geral
     const status = document.createElement("p");
     status.textContent = `Selecionado: ${date} às ${slot}`;
     status.style.marginTop = "12px";
     slotsDiv.appendChild(status);
 
-    // Guardar valor para JotForm
+    // Preparar valor para JotForm
     respostaFinal = `${date} | ${slot}`;
 
-    try {
-      // Guardar no Sheety (sem autenticação)
-      await fetch(SHEETY_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          folha1: {
-            data: date,
-            horario: slot
-          }
-        })
-      });
-
-      // Enviar dados ao JotForm para evitar "Please wait"
-      if (window.JotFormCustomWidget) {
-        JotFormCustomWidget.sendData({ value: respostaFinal });
-        JotFormCustomWidget.sendSubmit(respostaFinal);
-      }
-    } catch (err) {
-      console.error("Erro ao reservar", err);
-      alert("Erro ao reservar. Tenta novamente.");
+    // Enviar imediatamente ao JotForm
+    if (window.JotFormCustomWidget && typeof JotFormCustomWidget.sendSubmit === "function") {
+      JotFormCustomWidget.sendData({ value: respostaFinal });
+      JotFormCustomWidget.sendSubmit(respostaFinal);
+    } else {
+      console.warn("JotFormCustomWidget não está disponível ainda.");
     }
+
+    // Guardar no Sheety em paralelo (não bloqueia o submit)
+    fetch(SHEETY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folha1: { data: date, horario: slot } })
+    }).catch(err => console.error("Erro ao salvar no Sheety", err));
   }
 
   // ===============================
