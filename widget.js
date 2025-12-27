@@ -12,11 +12,11 @@ document.addEventListener("DOMContentLoaded", () => {
     { time: "10:15-11:00", vagas: 2 }
   ];
 
-  let reservado = false;
   let respostaFinal = "";
+  let reservado = false;
 
   // ===============================
-  // ELEMENTOS DOM
+  // ELEMENTOS
   // ===============================
   const datePicker = document.getElementById("datePicker");
   const slotsDiv = document.getElementById("slots");
@@ -29,7 +29,7 @@ document.addEventListener("DOMContentLoaded", () => {
   datePicker.min = today;
 
   // ===============================
-  // AO ESCOLHER O DIA
+  // AO ESCOLHER DIA
   // ===============================
   datePicker.addEventListener("change", async () => {
     const selectedDate = datePicker.value;
@@ -38,13 +38,13 @@ document.addEventListener("DOMContentLoaded", () => {
     slotsList.innerHTML = "";
 
     try {
-      const response = await fetch(SHEETY_URL);
-      const data = await response.json();
+      const res = await fetch(SHEETY_URL);
+      const data = await res.json();
       const reservas = data.folha1 || [];
 
       SLOTS.forEach(slot => {
         const usadas = reservas.filter(
-          r => r.data === selectedDate && r.horario && r.horario === slot.time
+          r => r.data === selectedDate && r.horario === slot.time
         ).length;
 
         const restantes = slot.vagas - usadas;
@@ -56,61 +56,62 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
           const btn = document.createElement("button");
           btn.textContent = `${slot.time} (${restantes} vagas)`;
+
           btn.onclick = () => {
             if (!reservado) {
-              reservar(selectedDate, slot.time, btn);
+              selecionarSlot(selectedDate, slot.time, btn);
             }
           };
+
           slotsList.appendChild(btn);
         }
       });
-    } catch (err) {
-      console.error("Erro ao carregar vagas", err);
-      slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
+    } catch (e) {
+      console.error(e);
+      slotsList.innerHTML = "<p>Erro ao carregar vagas</p>";
     }
   });
 
   // ===============================
-  // RESERVAR + ENVIAR AO JOTFORM
+  // SELECIONAR SLOT
   // ===============================
-  function reservar(date, slot, clickedButton) {
+  function selecionarSlot(date, slot, btn) {
     reservado = true;
 
-    // Desactivar todos os botões
-    const buttons = slotsList.querySelectorAll("button");
-    buttons.forEach(btn => (btn.disabled = true));
+    // UI
+    document
+      .querySelectorAll("#slotsList button")
+      .forEach(b => (b.disabled = true));
 
-    // Feedback visual
-    clickedButton.textContent = `${slot} — Selecionado`;
-    const status = document.createElement("p");
-    status.textContent = `Selecionado: ${date} às ${slot}`;
-    status.style.marginTop = "12px";
-    slotsDiv.appendChild(status);
+    btn.textContent = `${slot} — Selecionado`;
 
-    // Preparar valor para JotForm
     respostaFinal = `${date} | ${slot}`;
 
-    // Enviar imediatamente ao JotForm
-    if (window.JotFormCustomWidget && typeof JotFormCustomWidget.sendSubmit === "function") {
-      JotFormCustomWidget.sendData({ value: respostaFinal });
-      JotFormCustomWidget.sendSubmit(respostaFinal);
-    } else {
-      console.warn("JotFormCustomWidget não está disponível ainda.");
+    // 👉 ENVIAR AO JOTFORM (SEM SUBMIT)
+    if (window.JotFormCustomWidget) {
+      JotFormCustomWidget.sendData({
+        value: respostaFinal
+      });
     }
 
-    // Guardar no Sheety em paralelo (não bloqueia o submit)
+    // Guardar no Sheety (em background)
     fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folha1: { data: date, horario: slot } })
-    }).catch(err => console.error("Erro ao salvar no Sheety", err));
+      body: JSON.stringify({
+        folha1: {
+          data: date,
+          horario: slot
+        }
+      })
+    }).catch(err => console.error("Sheety erro:", err));
   }
 
   // ===============================
-  // GET DATA (necessário para Email Builder / PDFs)
+  // NECESSÁRIO PARA EMAIL / PDF
   // ===============================
   if (window.JotFormCustomWidget) {
-    JotFormCustomWidget.subscribe("getData", function () {
+    JotFormCustomWidget.subscribe("getData", () => {
       return { value: respostaFinal };
     });
   }
