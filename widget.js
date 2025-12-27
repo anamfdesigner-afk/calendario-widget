@@ -19,65 +19,65 @@ document.addEventListener("DOMContentLoaded", () => {
   // bloquear dias passados
   datePicker.min = new Date().toISOString().split("T")[0];
 
-  // quando escolhe o dia
   datePicker.addEventListener("change", async () => {
     const selectedDate = datePicker.value;
     reservado = false;
     slotsDiv.hidden = false;
     slotsList.innerHTML = "";
 
-    const res = await fetch(SHEETY_URL);
-    const data = await res.json();
-    const reservas = data.folha1 || [];
+    try {
+      const res = await fetch(SHEETY_URL);
+      const json = await res.json();
+      const reservas = json.folha1 || [];
 
-    SLOTS.forEach(slot => {
-      const usadas = reservas.filter(
-        r => r.data === selectedDate && r.horario === slot.time
-      ).length;
+      SLOTS.forEach(slot => {
+        const usadas = reservas.filter(
+          r => r.data === selectedDate && r.horario === slot.time
+        ).length;
 
-      const restantes = slot.vagas - usadas;
+        const restantes = slot.vagas - usadas;
 
-      if (restantes <= 0) {
-        const p = document.createElement("p");
-        p.textContent = `${slot.time} — Sem vagas`;
-        slotsList.appendChild(p);
-      } else {
-        const btn = document.createElement("button");
-        btn.textContent = `${slot.time} (${restantes} vagas)`;
-        btn.onclick = () => reservar(selectedDate, slot.time, btn);
-        slotsList.appendChild(btn);
-      }
-    });
+        if (restantes <= 0) {
+          const p = document.createElement("p");
+          p.textContent = `${slot.time} — Sem vagas`;
+          slotsList.appendChild(p);
+        } else {
+          const btn = document.createElement("button");
+          btn.textContent = `${slot.time} (${restantes} vagas)`;
+          btn.onclick = () => selecionarSlot(selectedDate, slot.time, btn);
+          slotsList.appendChild(btn);
+        }
+      });
+    } catch (e) {
+      slotsList.innerHTML = "<p>Erro ao carregar vagas</p>";
+    }
   });
 
-  function reservar(date, slot, btn) {
+  function selecionarSlot(date, slot, btn) {
     if (reservado) return;
     reservado = true;
 
-    document
-      .querySelectorAll("#slotsList button")
-      .forEach(b => (b.disabled = true));
-
-    btn.textContent = `${slot} — Selecionado`;
-
     respostaFinal = `${date} | ${slot}`;
 
-    // guardar no sheety (sem bloquear)
+    // UI
+    slotsList.querySelectorAll("button").forEach(b => b.disabled = true);
+    btn.textContent = `${slot} — Selecionado`;
+
+    const info = document.createElement("p");
+    info.textContent = `Selecionado: ${date} às ${slot}`;
+    slotsDiv.appendChild(info);
+
+    // guardar no sheety (não bloqueia o form)
     fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         folha1: { data: date, horario: slot }
       })
-    });
-
-    // informar o jotform que o campo já tem valor
-    if (window.JotFormCustomWidget) {
-      JotFormCustomWidget.sendData({ value: respostaFinal });
-    }
+    }).catch(() => {});
   }
 
-  // ESSENCIAL: o JotForm vai buscar o valor AQUI
+  // 🔑 ISTO É O MAIS IMPORTANTE
   if (window.JotFormCustomWidget) {
     JotFormCustomWidget.subscribe("getData", () => {
       return { value: respostaFinal };
