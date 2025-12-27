@@ -44,8 +44,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const reservas = data.folha1 || [];
 
       SLOTS.forEach(slot => {
+        // Contar quantas vagas já foram usadas para este dia e horário
         const usadas = reservas.filter(
-          r => r.data === selectedDate && r.horario === slot.time
+          r => r.data === selectedDate && r.horario && r.horario === slot.time
         ).length;
 
         const restantes = slot.vagas - usadas;
@@ -90,8 +91,11 @@ document.addEventListener("DOMContentLoaded", () => {
     status.style.marginTop = "12px";
     slotsDiv.appendChild(status);
 
+    // Guardar valor para JotForm
+    respostaFinal = `${date} | ${slot}`;
+
     try {
-      // Guardar no Sheety sem autenticação
+      // Guardar no Sheety (sem autenticação)
       await fetch(SHEETY_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -103,9 +107,7 @@ document.addEventListener("DOMContentLoaded", () => {
         })
       });
 
-      // Guardar valor para Jotform
-      respostaFinal = `${date} | ${slot}`;
-
+      // Enviar dados ao JotForm para evitar "Please wait"
       if (window.JotFormCustomWidget) {
         JotFormCustomWidget.sendData({ value: respostaFinal });
         JotFormCustomWidget.sendSubmit(respostaFinal);
