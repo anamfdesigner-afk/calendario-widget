@@ -1,7 +1,4 @@
 document.addEventListener("DOMContentLoaded", () => {
-  // ===============================
-  // CONFIGURAÇÃO
-  // ===============================
   const SHEETY_URL =
     "https://api.sheety.co/76a6d2f0ca2083ffa98601cdbdc2e82c/boCalendarioMontecarmo/folha1";
 
@@ -15,70 +12,48 @@ document.addEventListener("DOMContentLoaded", () => {
   let respostaFinal = "";
   let reservado = false;
 
-  // ===============================
-  // ELEMENTOS
-  // ===============================
   const datePicker = document.getElementById("datePicker");
   const slotsDiv = document.getElementById("slots");
   const slotsList = document.getElementById("slotsList");
 
-  // ===============================
-  // BLOQUEAR DIAS PASSADOS
-  // ===============================
-  const today = new Date().toISOString().split("T")[0];
-  datePicker.min = today;
+  // bloquear dias passados
+  datePicker.min = new Date().toISOString().split("T")[0];
 
-  // ===============================
-  // AO ESCOLHER DIA
-  // ===============================
+  // quando escolhe o dia
   datePicker.addEventListener("change", async () => {
     const selectedDate = datePicker.value;
     reservado = false;
     slotsDiv.hidden = false;
     slotsList.innerHTML = "";
 
-    try {
-      const res = await fetch(SHEETY_URL);
-      const data = await res.json();
-      const reservas = data.folha1 || [];
+    const res = await fetch(SHEETY_URL);
+    const data = await res.json();
+    const reservas = data.folha1 || [];
 
-      SLOTS.forEach(slot => {
-        const usadas = reservas.filter(
-          r => r.data === selectedDate && r.horario === slot.time
-        ).length;
+    SLOTS.forEach(slot => {
+      const usadas = reservas.filter(
+        r => r.data === selectedDate && r.horario === slot.time
+      ).length;
 
-        const restantes = slot.vagas - usadas;
+      const restantes = slot.vagas - usadas;
 
-        if (restantes <= 0) {
-          const p = document.createElement("p");
-          p.textContent = `${slot.time} — Sem vagas`;
-          slotsList.appendChild(p);
-        } else {
-          const btn = document.createElement("button");
-          btn.textContent = `${slot.time} (${restantes} vagas)`;
-
-          btn.onclick = () => {
-            if (!reservado) {
-              selecionarSlot(selectedDate, slot.time, btn);
-            }
-          };
-
-          slotsList.appendChild(btn);
-        }
-      });
-    } catch (e) {
-      console.error(e);
-      slotsList.innerHTML = "<p>Erro ao carregar vagas</p>";
-    }
+      if (restantes <= 0) {
+        const p = document.createElement("p");
+        p.textContent = `${slot.time} — Sem vagas`;
+        slotsList.appendChild(p);
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = `${slot.time} (${restantes} vagas)`;
+        btn.onclick = () => reservar(selectedDate, slot.time, btn);
+        slotsList.appendChild(btn);
+      }
+    });
   });
 
-  // ===============================
-  // SELECIONAR SLOT
-  // ===============================
-  function selecionarSlot(date, slot, btn) {
+  function reservar(date, slot, btn) {
+    if (reservado) return;
     reservado = true;
 
-    // UI
     document
       .querySelectorAll("#slotsList button")
       .forEach(b => (b.disabled = true));
@@ -87,29 +62,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
     respostaFinal = `${date} | ${slot}`;
 
-    // 👉 ENVIAR AO JOTFORM (SEM SUBMIT)
-    if (window.JotFormCustomWidget) {
-      JotFormCustomWidget.sendData({
-        value: respostaFinal
-      });
-    }
-
-    // Guardar no Sheety (em background)
+    // guardar no sheety (sem bloquear)
     fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        folha1: {
-          data: date,
-          horario: slot
-        }
+        folha1: { data: date, horario: slot }
       })
-    }).catch(err => console.error("Sheety erro:", err));
+    });
+
+    // informar o jotform que o campo já tem valor
+    if (window.JotFormCustomWidget) {
+      JotFormCustomWidget.sendData({ value: respostaFinal });
+    }
   }
 
-  // ===============================
-  // NECESSÁRIO PARA EMAIL / PDF
-  // ===============================
+  // ESSENCIAL: o JotForm vai buscar o valor AQUI
   if (window.JotFormCustomWidget) {
     JotFormCustomWidget.subscribe("getData", () => {
       return { value: respostaFinal };
