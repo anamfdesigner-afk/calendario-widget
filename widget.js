@@ -10,7 +10,7 @@ const SLOTS = [
   { time: "10:15-11:00", vagas: 2 }
 ];
 
-let reservado = false; // impede múltiplas seleções
+let reservado = false;
 let respostaFinal = "";
 
 // ===============================
@@ -27,7 +27,7 @@ const today = new Date().toISOString().split("T")[0];
 datePicker.min = today;
 
 // ===============================
-// FUNÇÃO DE FETCH DAS RESERVAS
+// FUNÇÃO PARA BUSCAR RESERVAS
 // ===============================
 async function fetchReservas() {
   try {
@@ -63,9 +63,7 @@ datePicker.addEventListener("change", async () => {
       const btn = document.createElement("button");
       btn.textContent = `${slot.time} (${restantes} vagas)`;
       btn.onclick = () => {
-        if (!reservado) {
-          reservar(selectedDate, slot.time, btn);
-        }
+        if (!reservado) reservar(selectedDate, slot.time, btn);
       };
       slotsList.appendChild(btn);
     }
@@ -79,8 +77,7 @@ async function reservar(date, slot, clickedButton) {
   reservado = true;
 
   // Desativa todos os botões
-  const buttons = slotsList.querySelectorAll("button");
-  buttons.forEach(btn => (btn.disabled = true));
+  slotsList.querySelectorAll("button").forEach(btn => (btn.disabled = true));
 
   // Feedback visual
   clickedButton.textContent = `${slot} — Selecionado`;
@@ -97,12 +94,9 @@ async function reservar(date, slot, clickedButton) {
     respostaFinal = `${date} | ${slot}`;
     console.log("💾 Resposta final:", respostaFinal);
 
-    // 3️⃣ Enviar para o JotForm (obrigatório ou opcional)
+    // 3️⃣ Enviar para JotForm
     waitForJFCustomWidget(() => {
-      // Campo obrigatório: usar sendSubmit
       JFCustomWidget.sendSubmit({ valid: true, value: respostaFinal });
-
-      // Preview, email builder, PDFs
       JFCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
     });
 
@@ -113,7 +107,7 @@ async function reservar(date, slot, clickedButton) {
 }
 
 // ===============================
-// INTEGRAÇÃO SEGURA COM JOTFORM
+// FUNÇÃO DE SEGURANÇA JOTFORM
 // ===============================
 function waitForJFCustomWidget(callback) {
   if (window.JFCustomWidget) {
