@@ -10,8 +10,8 @@ const SLOTS = [
   { time: "10:15-11:00", vagas: 2 }
 ];
 
-let reservado = false;
-let respostaFinal = "";
+let reservado = false;  // impede múltiplas seleções
+let respostaFinal = ""; // valor final para enviar ao JotForm
 
 // ===============================
 // ELEMENTOS DOM
@@ -27,17 +27,13 @@ const today = new Date().toISOString().split("T")[0];
 datePicker.min = today;
 
 // ===============================
-// FUNÇÃO PARA BUSCAR RESERVAS
+// FUNÇÃO PARA ENVIAR AO JOTFORM
 // ===============================
-async function fetchReservas() {
-  try {
-    const response = await fetch(SHEETY_URL);
-    const data = await response.json();
-    return data.folha1 || [];
-  } catch (err) {
-    console.error("Erro ao carregar vagas do Sheety", err);
-    return [];
-  }
+function enviarParaJotForm(value) {
+  window.parent.postMessage(
+    { type: 'setValue', value: value, targetId: 'input_119' },
+    '*'
+  );
 }
 
 // ===============================
@@ -49,71 +45,75 @@ datePicker.addEventListener("change", async () => {
   slotsDiv.hidden = false;
   slotsList.innerHTML = "";
 
-  const reservas = await fetchReservas();
+  try {
+    console.log("⏳ Fetching reservas do Sheety...");
+    const response = await fetch(SHEETY_URL);
+    const data = await response.json();
+    const reservas = data.folha1 || [];
+    console.log("✅ Dados recebidos do Sheety:", reservas);
 
-  SLOTS.forEach(slot => {
-    const usadas = reservas.filter(r => r.data === selectedDate && r.horario === slot.time).length;
-    const restantes = slot.vagas - usadas;
+    SLOTS.forEach(slot => {
+      const usadas = reservas.filter(
+        r => r.data === selectedDate && r.horario === slot.time
+      ).length;
+      const restantes = slot.vagas - usadas;
 
-    if (restantes <= 0) {
-      const p = document.createElement("p");
-      p.textContent = `${slot.time} — Sem vagas`;
-      slotsList.appendChild(p);
-    } else {
-      const btn = document.createElement("button");
-      btn.textContent = `${slot.time} (${restantes} vagas)`;
-      btn.onclick = () => {
-        if (!reservado) reservar(selectedDate, slot.time, btn);
-      };
-      slotsList.appendChild(btn);
-    }
-  });
+      if (restantes <= 0) {
+        const p = document.createElement("p");
+        p.textContent = `${slot.time} — Sem vagas`;
+        slotsList.appendChild(p);
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = `${slot.time} (${restantes} vagas)`;
+
+        btn.onclick = () => {
+          if (!reservado) {
+            reservar(selectedDate, slot.time, btn);
+            const valor = `${selectedDate} | ${slot.time}`;
+            enviarParaJotForm(valor); // envia para o campo oculto input_119
+          }
+        };
+
+        slotsList.appendChild(btn);
+      }
+    });
+  } catch (err) {
+    console.error("Erro ao carregar vagas", err);
+    slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
+  }
 });
 
 // ===============================
-// FUNÇÃO RESERVAR
+// RESERVAR + GRAVAR NO SHEETY
 // ===============================
 async function reservar(date, slot, clickedButton) {
   reservado = true;
 
   // Desativa todos os botões
-  slotsList.querySelectorAll("button").forEach(btn => (btn.disabled = true));
+  const buttons = slotsList.querySelectorAll("button");
+  buttons.forEach(btn => (btn.disabled = true));
 
   // Feedback visual
   clickedButton.textContent = `${slot} — Selecionado`;
+  const status = document.createElement("p");
+  status.textContent = `Selecionado: ${date} às ${slot}`;
+  status.style.marginTop = "12px";
+  slotsDiv.appendChild(status);
 
   try {
-    // 1️⃣ Guardar no Sheety
+    // Guardar no Sheety
+    const body = { folha1: { data: date, horario: slot } };
     await fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folha1: { data: date, horario: slot } })
+      body: JSON.stringify(body)
     });
+    console.log("✅ Reserva gravada no Sheety:", body);
 
-    // 2️⃣ Atualiza valor global
+    // Guardar localmente para debug
     respostaFinal = `${date} | ${slot}`;
-    console.log("💾 Resposta final:", respostaFinal);
-
-    // 3️⃣ Enviar para JotForm
-    waitForJFCustomWidget(() => {
-      JFCustomWidget.sendSubmit({ valid: true, value: respostaFinal });
-      JFCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
-    });
-
   } catch (err) {
     console.error("Erro ao reservar", err);
     alert("Erro ao reservar. Tenta novamente.");
-  }
-}
-
-// ===============================
-// FUNÇÃO DE SEGURANÇA JOTFORM
-// ===============================
-function waitForJFCustomWidget(callback) {
-  if (window.JFCustomWidget) {
-    callback();
-    console.log("✅ JFCustomWidget detectado e configurado");
-  } else {
-    setTimeout(() => waitForJFCustomWidget(callback), 50);
   }
 }
