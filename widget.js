@@ -82,15 +82,13 @@ datePicker.addEventListener("change", async () => {
 async function reservar(date, slot, clickedButton) {
   reservado = true;
 
-  // Desactivar todos os botões
   const buttons = slotsList.querySelectorAll("button");
   buttons.forEach(btn => (btn.disabled = true));
 
-  // Feedback visual
   clickedButton.textContent = `${slot} — Selecionado`;
 
   try {
-    // 1️⃣ Guardar no Sheety
+    // 👉 GRAVAR NO SHEETY
     await fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -102,7 +100,7 @@ async function reservar(date, slot, clickedButton) {
       })
     });
 
-    // 2️⃣ Enviar ao JotForm (FORMA CORRETA, SEM PLEASE WAIT)
+    // 👉 ENVIAR AO JOTFORM (SEM PLEASE WAIT)
     const value = `${date} | ${slot}`;
 
     if (window.JotFormCustomWidget) {
