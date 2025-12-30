@@ -13,7 +13,6 @@ document.addEventListener("DOMContentLoaded", () => {
   ];
 
   let reservado = false;
-  let respostaFinal = "";
 
   // ===============================
   // ELEMENTOS DOM
@@ -44,7 +43,6 @@ document.addEventListener("DOMContentLoaded", () => {
       const reservas = data.folha1 || [];
 
       SLOTS.forEach(slot => {
-        // Contar quantas reservas já existem para esse dia e horário
         const usadas = reservas.filter(
           r => r.data === selectedDate && r.horario === slot.time
         ).length;
@@ -84,37 +82,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Feedback visual
     clickedButton.textContent = `${slot} — Selecionado`;
-    const status = document.createElement("p");
-    status.textContent = `Selecionado: ${date} às ${slot}`;
-    status.style.marginTop = "12px";
-    slotsDiv.appendChild(status);
 
-    // Valor para o JotForm
-    respostaFinal = `${date} | ${slot}`;
-
-    // ✅ Enviar imediatamente ao JotForm
-    if (window.JotFormCustomWidget && typeof JotFormCustomWidget.sendSubmit === "function") {
-      JotFormCustomWidget.sendData({ value: respostaFinal });
-      JotFormCustomWidget.sendSubmit(respostaFinal);
-    }
-
-    // ✅ Guardar no Sheety em paralelo (não bloqueia o submit)
+    // Enviar para Sheety
     fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folha1: { data: date, horario: slot } })
     })
     .then(resp => resp.json())
-    .then(json => console.log("Reservado no Sheety", json))
-    .catch(err => console.error("Erro ao salvar no Sheety", err));
-  }
-
-  // ===============================
-  // GET DATA (necessário para Email Builder / PDFs)
-  // ===============================
-  if (window.JotFormCustomWidget) {
-    JotFormCustomWidget.subscribe("getData", function () {
-      return { value: respostaFinal };
+    .then(json => {
+      console.log("Reserva gravada no Sheety:", json);
+      alert(`Reserva confirmada: ${date} | ${slot}`);
+    })
+    .catch(err => {
+      console.error("Erro ao salvar no Sheety", err);
+      alert("Erro ao reservar. Tenta novamente.");
     });
   }
 });
