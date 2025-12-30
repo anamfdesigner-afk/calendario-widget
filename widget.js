@@ -1,7 +1,4 @@
 document.addEventListener("DOMContentLoaded", () => {
-  // ===============================
-  // CONFIGURAÇÃO
-  // ===============================
   const SHEETY_URL =
     "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
 
@@ -13,23 +10,15 @@ document.addEventListener("DOMContentLoaded", () => {
   ];
 
   let reservado = false;
+  let respostaFinal = "";
 
-  // ===============================
-  // ELEMENTOS DOM
-  // ===============================
   const datePicker = document.getElementById("datePicker");
   const slotsDiv = document.getElementById("slots");
   const slotsList = document.getElementById("slotsList");
 
-  // ===============================
-  // BLOQUEAR DIAS PASSADOS
-  // ===============================
   const today = new Date().toISOString().split("T")[0];
   datePicker.min = today;
 
-  // ===============================
-  // AO ESCOLHER O DIA
-  // ===============================
   datePicker.addEventListener("change", async () => {
     const selectedDate = datePicker.value;
     reservado = false;
@@ -37,7 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
     slotsList.innerHTML = "";
 
     try {
-      // Obter reservas atuais do Sheety
       const response = await fetch(SHEETY_URL);
       const data = await response.json();
       const reservas = data.folha1 || [];
@@ -70,18 +58,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ===============================
-  // FUNÇÃO RESERVAR
-  // ===============================
   function reservar(date, slot, clickedButton) {
     reservado = true;
-
-    // Bloquear todos os botões
     const buttons = slotsList.querySelectorAll("button");
-    buttons.forEach(btn => btn.disabled = true);
+    buttons.forEach(btn => (btn.disabled = true));
 
-    // Feedback visual
     clickedButton.textContent = `${slot} — Selecionado`;
+    respostaFinal = `${date} | ${slot}`;
+
+    // Enviar dados para JotForm (Preview / Email Builder)
+    if (window.JotFormCustomWidget) {
+      JotFormCustomWidget.sendData({ value: respostaFinal });
+    }
 
     // Enviar para Sheety
     fetch(SHEETY_URL, {
@@ -90,13 +78,14 @@ document.addEventListener("DOMContentLoaded", () => {
       body: JSON.stringify({ folha1: { data: date, horario: slot } })
     })
     .then(resp => resp.json())
-    .then(json => {
-      console.log("Reserva gravada no Sheety:", json);
-      alert(`Reserva confirmada: ${date} | ${slot}`);
-    })
-    .catch(err => {
-      console.error("Erro ao salvar no Sheety", err);
-      alert("Erro ao reservar. Tenta novamente.");
+    .then(json => console.log("Reserva gravada no Sheety:", json))
+    .catch(err => console.error("Erro ao salvar no Sheety", err));
+  }
+
+  // Permite que o JotForm leia os dados do widget
+  if (window.JotFormCustomWidget) {
+    JotFormCustomWidget.subscribe("getData", function () {
+      return { value: respostaFinal };
     });
   }
 });
