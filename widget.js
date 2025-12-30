@@ -111,3 +111,21 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 });
+
+// ===============================
+// Espera segura pelo JotFormCustomWidget
+// ===============================
+function waitForJotForm(callback) {
+  if (window.JotFormCustomWidget) {
+    callback();
+  } else {
+    setTimeout(() => waitForJotForm(callback), 50); // verifica a cada 50ms
+  }
+}
+
+// ativa o envio seguro e subscribe para getData
+waitForJotForm(() => {
+  JotFormCustomWidget.sendData({ value: respostaFinal });
+  JotFormCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
+  console.log("✅ JotFormCustomWidget detectado e configurado");
+});
