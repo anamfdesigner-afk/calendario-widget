@@ -11,7 +11,7 @@ const SLOTS = [
 ];
 
 let reservado = false;  // impede múltiplas seleções
-let respostaFinal = ""; // valor final para enviar ao JotForm
+let respostaFinal = "";  // valor final para enviar ao JotForm
 
 // ===============================
 // ELEMENTOS DOM
@@ -29,11 +29,33 @@ datePicker.min = today;
 // ===============================
 // FUNÇÃO PARA ENVIAR AO JOTFORM
 // ===============================
-function enviarParaJotForm(value) {
+function enviarParaJotForm(valor) {
+  // Envia para campo oculto
   window.parent.postMessage(
-    { type: 'setValue', value: value, targetId: 'input_119' },
+    { type: 'setValue', value: valor, targetId: 'input_119' },
     '*'
   );
+
+  // Informa o JotForm que o widget é válido
+  if (window.JFCustomWidget) {
+    JFCustomWidget.sendSubmit({
+      value: valor,
+      valid: true
+    });
+    console.log("✅ JotFormCustomWidget detectado e campo marcado como válido");
+  } else {
+    // Espera até a API carregar
+    const waitForJotForm = setInterval(() => {
+      if (window.JFCustomWidget) {
+        JFCustomWidget.sendSubmit({
+          value: valor,
+          valid: true
+        });
+        console.log("✅ JotFormCustomWidget agora detectado e válido");
+        clearInterval(waitForJotForm);
+      }
+    }, 50);
+  }
 }
 
 // ===============================
@@ -70,7 +92,7 @@ datePicker.addEventListener("change", async () => {
           if (!reservado) {
             reservar(selectedDate, slot.time, btn);
             const valor = `${selectedDate} | ${slot.time}`;
-            enviarParaJotForm(valor); // envia para o campo oculto input_119
+            enviarParaJotForm(valor); // envia valor e marca como válido
           }
         };
 
@@ -110,7 +132,7 @@ async function reservar(date, slot, clickedButton) {
     });
     console.log("✅ Reserva gravada no Sheety:", body);
 
-    // Guardar localmente para debug
+    // Guarda localmente
     respostaFinal = `${date} | ${slot}`;
   } catch (err) {
     console.error("Erro ao reservar", err);
