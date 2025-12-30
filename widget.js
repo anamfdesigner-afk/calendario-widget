@@ -73,14 +73,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // ===============================
-  // RESERVAR + ENVIAR AO JOTFORM
+  // FUNÇÃO RESERVAR
   // ===============================
   function reservar(date, slot, clickedButton) {
     reservado = true;
 
-    // Desactivar todos os botões
+    // Bloquear todos os botões
     const buttons = slotsList.querySelectorAll("button");
-    buttons.forEach(btn => (btn.disabled = true));
+    buttons.forEach(btn => btn.disabled = true);
 
     // Feedback visual
     clickedButton.textContent = `${slot} — Selecionado`;
@@ -92,18 +92,21 @@ document.addEventListener("DOMContentLoaded", () => {
     // Valor para o JotForm
     respostaFinal = `${date} | ${slot}`;
 
-    // Enviar imediatamente ao JotForm
+    // ✅ Enviar imediatamente ao JotForm
     if (window.JotFormCustomWidget && typeof JotFormCustomWidget.sendSubmit === "function") {
       JotFormCustomWidget.sendData({ value: respostaFinal });
       JotFormCustomWidget.sendSubmit(respostaFinal);
     }
 
-    // Guardar no Sheety em paralelo (não bloqueia o submit)
+    // ✅ Guardar no Sheety em paralelo (não bloqueia o submit)
     fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folha1: { data: date, horario: slot } })
-    }).catch(err => console.error("Erro ao salvar no Sheety", err));
+    })
+    .then(resp => resp.json())
+    .then(json => console.log("Reservado no Sheety", json))
+    .catch(err => console.error("Erro ao salvar no Sheety", err));
   }
 
   // ===============================
