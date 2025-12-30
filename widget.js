@@ -60,10 +60,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       });
     } catch (err) {
-      console.error("❌ Erro ao carregar vagas:", err);
+      console.error("❌ Erro ao carregar vagas", err);
       slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
     }
   });
+
+  function sendToJotForm(value) {
+    if (window.JotFormCustomWidget) {
+      try {
+        JotFormCustomWidget.sendData({ value: value });
+        console.log("✅ Dados enviados para JotForm:", value);
+      } catch (e) {
+        console.error("❌ Erro ao enviar para JotForm:", e);
+      }
+    } else {
+      // Espera 100ms e tenta novamente
+      setTimeout(() => sendToJotForm(value), 100);
+    }
+  }
 
   function reservar(date, slot, clickedButton) {
     console.log("🖱️ Slot clicado:", date, slot);
@@ -74,20 +88,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     clickedButton.textContent = `${slot} — Selecionado`;
     respostaFinal = `${date} | ${slot}`;
-    console.log("💾 Resposta final:", respostaFinal);
 
-    // Enviar dados para JotForm
-    if (window.JotFormCustomWidget) {
-      console.log("✉️ Enviando dados para JotForm...");
-      try {
-        JotFormCustomWidget.sendData({ value: respostaFinal });
-        console.log("✅ Dados enviados para JotForm");
-      } catch (e) {
-        console.error("❌ Erro ao enviar para JotForm:", e);
-      }
-    } else {
-      console.log("⚠️ JotFormCustomWidget não detectado");
-    }
+    // Envia para JotForm de forma segura
+    sendToJotForm(respostaFinal);
 
     // Enviar para Sheety
     fetch(SHEETY_URL, {
@@ -95,11 +98,12 @@ document.addEventListener("DOMContentLoaded", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folha1: { data: date, horario: slot } })
     })
-    .then(resp => resp.json())
-    .then(json => console.log("✅ Reserva gravada no Sheety:", json))
-    .catch(err => console.error("❌ Erro ao salvar no Sheety", err));
+      .then(resp => resp.json())
+      .then(json => console.log("✅ Reserva gravada no Sheety:", json))
+      .catch(err => console.error("❌ Erro ao salvar no Sheety", err));
   }
 
+  // Permite que o JotForm leia os dados do widget
   if (window.JotFormCustomWidget) {
     JotFormCustomWidget.subscribe("getData", function () {
       console.log("📡 JotForm pediu dados, retornando:", respostaFinal);
