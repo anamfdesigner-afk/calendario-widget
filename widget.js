@@ -27,6 +27,20 @@ const today = new Date().toISOString().split("T")[0];
 datePicker.min = today;
 
 // ===============================
+// FUNÇÃO DE FETCH DAS RESERVAS
+// ===============================
+async function fetchReservas() {
+  try {
+    const response = await fetch(SHEETY_URL);
+    const data = await response.json();
+    return data.folha1 || [];
+  } catch (err) {
+    console.error("Erro ao carregar vagas do Sheety", err);
+    return [];
+  }
+}
+
+// ===============================
 // AO ESCOLHER O DIA
 // ===============================
 datePicker.addEventListener("change", async () => {
@@ -35,38 +49,27 @@ datePicker.addEventListener("change", async () => {
   slotsDiv.hidden = false;
   slotsList.innerHTML = "";
 
-  try {
-    console.log("⏳ Fetching reservas do Sheety...");
-    const response = await fetch(SHEETY_URL);
-    const data = await response.json();
-    const reservas = data.folha1 || [];
-    console.log("✅ Dados recebidos do Sheety:", reservas);
+  const reservas = await fetchReservas();
 
-    SLOTS.forEach(slot => {
-      const usadas = reservas.filter(
-        r => r.data === selectedDate && r.horario === slot.time
-      ).length;
-      const restantes = slot.vagas - usadas;
+  SLOTS.forEach(slot => {
+    const usadas = reservas.filter(r => r.data === selectedDate && r.horario === slot.time).length;
+    const restantes = slot.vagas - usadas;
 
-      if (restantes <= 0) {
-        const p = document.createElement("p");
-        p.textContent = `${slot.time} — Sem vagas`;
-        slotsList.appendChild(p);
-      } else {
-        const btn = document.createElement("button");
-        btn.textContent = `${slot.time} (${restantes} vagas)`;
-        btn.onclick = () => {
-          if (!reservado) {
-            reservar(selectedDate, slot.time, btn);
-          }
-        };
-        slotsList.appendChild(btn);
-      }
-    });
-  } catch (err) {
-    console.error("Erro ao carregar vagas", err);
-    slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
-  }
+    if (restantes <= 0) {
+      const p = document.createElement("p");
+      p.textContent = `${slot.time} — Sem vagas`;
+      slotsList.appendChild(p);
+    } else {
+      const btn = document.createElement("button");
+      btn.textContent = `${slot.time} (${restantes} vagas)`;
+      btn.onclick = () => {
+        if (!reservado) {
+          reservar(selectedDate, slot.time, btn);
+        }
+      };
+      slotsList.appendChild(btn);
+    }
+  });
 });
 
 // ===============================
@@ -87,23 +90,18 @@ async function reservar(date, slot, clickedButton) {
     await fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        folha1: {
-          data: date,
-          horario: slot
-        }
-      })
+      body: JSON.stringify({ folha1: { data: date, horario: slot } })
     });
 
-    // Atualiza variável global
+    // Atualiza valor global
     respostaFinal = `${date} | ${slot}`;
-
     console.log("💾 Resposta final:", respostaFinal);
 
-    // ✅ Enviar valor ao JotForm (somente dentro do iframe do JotForm)
-    if (window.JFCustomWidget) {
+    // Envia para o JotForm se estivermos dentro do iframe
+    waitForJFCustomWidget(() => {
+      // Se queres obrigatório, podes usar sendSubmit({ valid: true, value })
       JFCustomWidget.sendData({ value: respostaFinal });
-    }
+    });
 
   } catch (err) {
     console.error("Erro ao reservar", err);
@@ -112,21 +110,15 @@ async function reservar(date, slot, clickedButton) {
 }
 
 // ===============================
-// INTEGRAÇÃO COM JOTFORM API
+// INTEGRAÇÃO SEGURA COM JOTFORM
 // ===============================
-function initJotFormAPI() {
+function waitForJFCustomWidget(callback) {
   if (window.JFCustomWidget) {
-    // Garantir que o JotForm pode ler o valor do widget
-    JFCustomWidget.subscribe("getData", function() {
-      return { value: respostaFinal };
-    });
-
-    console.log("✅ JotFormCustomWidget configurado e pronto");
+    callback();
+    // Permite que o form leia o valor atual
+    JFCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
+    console.log("✅ JotFormCustomWidget detectado e configurado");
   } else {
-    // Tenta de novo em 50ms se ainda não existir
-    setTimeout(initJotFormAPI, 50);
+    setTimeout(() => waitForJFCustomWidget(callback), 50);
   }
 }
-
-// Inicializa integração
-initJotFormAPI();
