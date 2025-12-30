@@ -4,34 +4,24 @@
   <meta charset="UTF-8">
   <title>Calendário Widget</title>
   <style>
-    body {
-      font-family: sans-serif;
-      padding: 20px;
+    #slots button {
+      margin: 4px;
+      padding: 6px 12px;
     }
-    #slotsList button {
-      margin: 5px;
-      padding: 8px 12px;
-      cursor: pointer;
-    }
-    #slotsList p {
-      margin: 5px 0;
-    }
-    #slots {
-      margin-top: 15px;
+    #slots p {
+      margin: 4px;
     }
   </style>
 </head>
 <body>
-
-  <label for="datePicker">Escolhe um dia:</label>
+  <h2>Escolhe a data:</h2>
   <input type="date" id="datePicker">
 
   <div id="slots" hidden>
-    <h4>Escolhe um horário:</h4>
+    <h3>Escolhe o horário:</h3>
     <div id="slotsList"></div>
   </div>
 
-  <!-- Script -->
   <script src="widget.js"></script>
 </body>
 </html>
