@@ -10,7 +10,7 @@ const SLOTS = [
   { time: "10:15-11:00", vagas: 2 }
 ];
 
-let reservado = false;
+let reservado = false; // impede múltiplas seleções
 let respostaFinal = "";
 
 // ===============================
@@ -86,21 +86,24 @@ async function reservar(date, slot, clickedButton) {
   clickedButton.textContent = `${slot} — Selecionado`;
 
   try {
-    // Guardar no Sheety
+    // 1️⃣ Guardar no Sheety
     await fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folha1: { data: date, horario: slot } })
     });
 
-    // Atualiza valor global
+    // 2️⃣ Atualiza valor global
     respostaFinal = `${date} | ${slot}`;
     console.log("💾 Resposta final:", respostaFinal);
 
-    // Envia para o JotForm se estivermos dentro do iframe
+    // 3️⃣ Enviar para o JotForm (obrigatório ou opcional)
     waitForJFCustomWidget(() => {
-      // Se queres obrigatório, podes usar sendSubmit({ valid: true, value })
-      JFCustomWidget.sendData({ value: respostaFinal });
+      // Campo obrigatório: usar sendSubmit
+      JFCustomWidget.sendSubmit({ valid: true, value: respostaFinal });
+
+      // Preview, email builder, PDFs
+      JFCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
     });
 
   } catch (err) {
@@ -115,9 +118,7 @@ async function reservar(date, slot, clickedButton) {
 function waitForJFCustomWidget(callback) {
   if (window.JFCustomWidget) {
     callback();
-    // Permite que o form leia o valor atual
-    JFCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
-    console.log("✅ JotFormCustomWidget detectado e configurado");
+    console.log("✅ JFCustomWidget detectado e configurado");
   } else {
     setTimeout(() => waitForJFCustomWidget(callback), 50);
   }
