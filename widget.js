@@ -31,7 +31,6 @@ datePicker.min = today;
 // ===============================
 function enviarParaJotForm(valor) {
   // Envia para campo oculto
-  alert (valor);
   window.parent.postMessage(
     { type: 'setValue', value: valor, targetId: 'input_119' },
     '*'
@@ -140,4 +139,5 @@ async function reservar(date, slot, clickedButton) {
     alert("Erro ao reservar. Tenta novamente.");
   }
 }
+
 
