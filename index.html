@@ -1,94 +1,28 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8" />
-  <title>Calendar Widget</title>
-
-  <!-- Jotform Custom Widget API -->
-  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
-
+  <meta charset="UTF-8">
+  <title>Calendário Widget</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      padding: 12px;
-    }
-    .slot {
-      margin: 6px 0;
-      padding: 8px;
-      border: 1px solid #ccc;
-      cursor: pointer;
-      border-radius: 4px;
-    }
-    .slot:hover {
-      background: #f0f0f0;
-    }
+    body { font-family: sans-serif; padding: 20px; }
+    #slotsList button { margin: 5px; padding: 8px 12px; }
+    #slotsList p { margin: 5px; font-weight: bold; }
   </style>
 </head>
-
 <body>
 
-  <h4>Seleciona data</h4>
-  <input type="date" id="date" />
+  <h2>Escolhe a data:</h2>
+  <input type="date" id="datePicker">
 
-  <div id="slots"></div>
+  <div id="slots" hidden>
+    <h3>Horários disponíveis:</h3>
+    <div id="slotsList"></div>
+  </div>
 
-  <script>
-    let selectedValue = "";
+  <!-- Link para o JS do widget -->
+  <script src="widget.js"></script>
 
-    console.log("✅ Widget JS carregado");
-
-    // ⚠️ OBRIGATÓRIO
-    JFCustomWidget.subscribe("ready", function () {
-      console.log("✅ JFCustomWidget ready");
-
-      // necessário para o iframe não ficar minúsculo
-      JFCustomWidget.requestFrameResize({ height: 300 });
-    });
-
-    // quando o user escolhe uma data
-    document.getElementById("date").addEventListener("change", function (e) {
-      const date = e.target.value;
-      const slotsDiv = document.getElementById("slots");
-      slotsDiv.innerHTML = "";
-
-      // slots fake (só para teste)
-      const slots = [
-        "09:00–09:45",
-        "10:00–10:45",
-        "11:00–11:45"
-      ];
-
-      slots.forEach(slot => {
-        const div = document.createElement("div");
-        div.className = "slot";
-        div.innerText = slot;
-
-        div.onclick = () => {
-          selectedValue = `${date} | ${slot}`;
-
-          console.log("📤 A enviar para Jotform:", selectedValue);
-
-          JFCustomWidget.sendData({
-            value: selectedValue
-          });
-
-          alert("Selecionado: " + selectedValue);
-        };
-
-        slotsDiv.appendChild(div);
-      });
-
-      JFCustomWidget.requestFrameResize({ height: 400 });
-    });
-
-    // para REQUIRED fields (mesmo que agora não uses)
-    JFCustomWidget.subscribe("submit", function () {
-      JFCustomWidget.sendSubmit({
-        valid: selectedValue !== "",
-        value: selectedValue
-      });
-    });
-  </script>
-
+  <!-- Biblioteca JotForm Custom Widget (necessária se for usado dentro do JotForm) -->
+  <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
 </body>
 </html>
