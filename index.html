@@ -1,27 +1,40 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8">
-  <title>Calendário Widget</title>
+  <meta charset="UTF-8" />
+  <title>Appointment Widget</title>
+
   <style>
-    #slots button {
-      margin: 4px;
-      padding: 6px 12px;
+    body {
+      font-family: Arial, sans-serif;
+      padding: 10px;
     }
-    #slots p {
-      margin: 4px;
+
+    .slot {
+      display: block;
+      margin: 6px 0;
+      padding: 8px;
+      width: 100%;
+      cursor: pointer;
+    }
+
+    .slot.selected {
+      background-color: #000;
+      color: #fff;
     }
   </style>
 </head>
 <body>
-  <h2>Escolhe a data:</h2>
-  <input type="date" id="datePicker">
 
-  <div id="slots" hidden>
-    <h3>Escolhe o horário:</h3>
-    <div id="slotsList"></div>
-  </div>
+  <label>
+    Data:
+    <input type="date" id="dateInput" />
+  </label>
 
+  <div id="slots"></div>
+
+  <!-- Jotform Custom Widget API -->
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
   <script src="widget.js"></script>
 </body>
 </html>
