@@ -2,39 +2,93 @@
 <html lang="pt">
 <head>
   <meta charset="UTF-8" />
-  <title>Appointment Widget</title>
+  <title>Calendar Widget</title>
+
+  <!-- Jotform Custom Widget API -->
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
 
   <style>
     body {
       font-family: Arial, sans-serif;
-      padding: 10px;
+      padding: 12px;
     }
-
     .slot {
-      display: block;
       margin: 6px 0;
       padding: 8px;
-      width: 100%;
+      border: 1px solid #ccc;
       cursor: pointer;
+      border-radius: 4px;
     }
-
-    .slot.selected {
-      background-color: #000;
-      color: #fff;
+    .slot:hover {
+      background: #f0f0f0;
     }
   </style>
 </head>
+
 <body>
 
-  <label>
-    Data:
-    <input type="date" id="dateInput" />
-  </label>
+  <h4>Seleciona data</h4>
+  <input type="date" id="date" />
 
   <div id="slots"></div>
 
-  <!-- Jotform Custom Widget API -->
-  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
-  <script src="widget.js"></script>
+  <script>
+    let selectedValue = "";
+
+    console.log("✅ Widget JS carregado");
+
+    // ⚠️ OBRIGATÓRIO
+    JFCustomWidget.subscribe("ready", function () {
+      console.log("✅ JFCustomWidget ready");
+
+      // necessário para o iframe não ficar minúsculo
+      JFCustomWidget.requestFrameResize({ height: 300 });
+    });
+
+    // quando o user escolhe uma data
+    document.getElementById("date").addEventListener("change", function (e) {
+      const date = e.target.value;
+      const slotsDiv = document.getElementById("slots");
+      slotsDiv.innerHTML = "";
+
+      // slots fake (só para teste)
+      const slots = [
+        "09:00–09:45",
+        "10:00–10:45",
+        "11:00–11:45"
+      ];
+
+      slots.forEach(slot => {
+        const div = document.createElement("div");
+        div.className = "slot";
+        div.innerText = slot;
+
+        div.onclick = () => {
+          selectedValue = `${date} | ${slot}`;
+
+          console.log("📤 A enviar para Jotform:", selectedValue);
+
+          JFCustomWidget.sendData({
+            value: selectedValue
+          });
+
+          alert("Selecionado: " + selectedValue);
+        };
+
+        slotsDiv.appendChild(div);
+      });
+
+      JFCustomWidget.requestFrameResize({ height: 400 });
+    });
+
+    // para REQUIRED fields (mesmo que agora não uses)
+    JFCustomWidget.subscribe("submit", function () {
+      JFCustomWidget.sendSubmit({
+        valid: selectedValue !== "",
+        value: selectedValue
+      });
+    });
+  </script>
+
 </body>
 </html>
