@@ -37,14 +37,15 @@ datePicker.addEventListener("change", async () => {
   slotsList.innerHTML = "";
 
   try {
-    console.log("⏳ Fetching reservas do Sheety...");
     const response = await fetch(SHEETY_GET_URL);
     const data = await response.json();
     const reservas = data.folha1 || [];
-    console.log("✅ Dados recebidos do Sheety:", reservas);
 
     SLOTS.forEach(slot => {
-      const usadas = reservas.filter(r => r.data === selectedDate && r.horario === slot.time).length;
+      const usadas = reservas.filter(
+        r => r.data === selectedDate && r.horario === slot.time
+      ).length;
+
       const restantes = slot.vagas - usadas;
 
       if (restantes <= 0) {
@@ -67,16 +68,13 @@ datePicker.addEventListener("change", async () => {
 });
 
 // ===============================
-// RESERVAR + ENVIAR AO JOTFORM
+// RESERVAR + JOTFORM + SHEETY
 // ===============================
 async function reservar(date, slot, clickedButton) {
   reservado = true;
 
-  // Desativar todos os botões
-  const buttons = slotsList.querySelectorAll("button");
-  buttons.forEach(btn => (btn.disabled = true));
-
-  // Feedback visual
+  // Desativar botões
+  slotsList.querySelectorAll("button").forEach(btn => btn.disabled = true);
   clickedButton.textContent = `${slot} — Selecionado`;
 
   try {
@@ -84,26 +82,27 @@ async function reservar(date, slot, clickedButton) {
     await fetch(SHEETY_POST_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folha1: { data: date, horario: slot } })
+      body: JSON.stringify({
+        folha1: { data: date, horario: slot }
+      })
     });
-    console.log("✅ Reserva gravada no Sheety:", { data: date, horario: slot });
 
-    // 2️⃣ Guardar valor para JotForm e hidden field
+    // 2️⃣ Criar resposta final
     respostaFinal = `${date} | ${slot}`;
 
+    // 3️⃣ ENVIAR PARA O HIDDEN FIELD DO JOTFORM
     if (window.JFCustomWidget) {
-      const data = { value: respostaFinal, valid: true };
 
-      // Envia o valor para o form
-      JFCustomWidget.sendData(data);
-      JFCustomWidget.sendSubmit(data);
+      // 🔴 ESTA É A LINHA CRÍTICA PARA O GOOGLE SHEET
+      JFCustomWidget.setFieldsValue({
+        respostaFinal: respostaFinal
+      });
 
-      // Atualiza o hidden field no JotForm
-      JFCustomWidget.setFieldsValue({ respostaFinal: respostaFinal });
-
-      console.log("✅ Enviado para JotForm e hidden field atualizado:", data);
-    } else {
-      console.warn("⚠️ JFCustomWidget não detetado");
+      // Enviar valor do widget
+      JFCustomWidget.sendData({
+        value: respostaFinal,
+        valid: true
+      });
     }
 
   } catch (err) {
@@ -113,8 +112,10 @@ async function reservar(date, slot, clickedButton) {
 }
 
 // ===============================
-// SUBSCRIBIR PARA O FORM (GET DATA)
+// GET DATA (EDIÇÃO DE SUBMISSÕES)
 // ===============================
 if (window.JFCustomWidget) {
-  JFCustomWidget.subscribe("getData", () => ({ value: respostaFinal }));
+  JFCustomWidget.subscribe("getData", () => ({
+    value: respostaFinal
+  }));
 }
