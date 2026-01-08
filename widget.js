@@ -1,9 +1,8 @@
-// widget.js
 // ===============================
 // CONFIGURAÇÃO
 // ===============================
 const SHEETY_URL = "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
-
+const SHEETY_TOKEN = ""; // se não tiver token, deixa vazio
 const SLOTS = [
   { time: "08:00-08:45", vagas: 3 },
   { time: "08:45-09:30", vagas: 2 },
@@ -12,7 +11,7 @@ const SLOTS = [
 ];
 
 let reservado = false;
-let respostaFinal = "";
+let reservaFinal = "";
 
 // ===============================
 // ELEMENTOS DOM
@@ -38,13 +37,17 @@ datePicker.addEventListener("change", async () => {
 
   try {
     console.log("⏳ Fetching reservas do Sheety...");
-    const response = await fetch(SHEETY_URL);
+    const response = await fetch(SHEETY_URL, {
+      headers: SHEETY_TOKEN ? { "Authorization": `Bearer ${SHEETY_TOKEN}` } : {}
+    });
     const data = await response.json();
     const reservas = data.folha1 || [];
     console.log("✅ Dados recebidos do Sheety:", reservas);
 
     SLOTS.forEach(slot => {
-      const usadas = reservas.filter(r => r.data === selectedDate && r.horario === slot.time).length;
+      const usadas = reservas.filter(
+        r => r.data === selectedDate && r.horario === slot.time
+      ).length;
       const restantes = slot.vagas - usadas;
 
       if (restantes <= 0) {
@@ -55,9 +58,7 @@ datePicker.addEventListener("change", async () => {
         const btn = document.createElement("button");
         btn.textContent = `${slot.time} (${restantes} vagas)`;
         btn.onclick = () => {
-          if (!reservado) {
-            reservar(selectedDate, slot.time, btn);
-          }
+          if (!reservado) reservar(selectedDate, slot.time, btn);
         };
         slotsList.appendChild(btn);
       }
@@ -69,45 +70,49 @@ datePicker.addEventListener("change", async () => {
 });
 
 // ===============================
-// RESERVAR + ENVIAR AO SHEETY + JOTFORM
+// RESERVAR + ENVIAR AO JOTFORM
 // ===============================
 async function reservar(date, slot, clickedButton) {
   reservado = true;
 
   // Desactivar todos os botões
-  const buttons = slotsList.querySelectorAll("button");
-  buttons.forEach(btn => (btn.disabled = true));
+  slotsList.querySelectorAll("button").forEach(btn => (btn.disabled = true));
 
   // Feedback visual
   clickedButton.textContent = `${slot} — Selecionado`;
 
-  respostaFinal = `${date} | ${slot}`;
+  reservaFinal = `${date} | ${slot}`;
+
+  // Atualizar o campo oculto do JotForm
+  const hiddenField = document.querySelector('[name="RespostaFinal"]');
+  if (hiddenField) hiddenField.value = reservaFinal;
 
   try {
-    // 1️⃣ Guardar no Sheety
+    // Guardar no Sheety
     await fetch(SHEETY_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        folha1: {
-          data: date,
-          horario: slot
-        }
-      })
+      headers: {
+        "Content-Type": "application/json",
+        ...(SHEETY_TOKEN && { "Authorization": `Bearer ${SHEETY_TOKEN}` })
+      },
+      body: JSON.stringify({ folha1: { data: date, horario: slot } })
     });
-    console.log("✅ Reserva gravada no Sheety");
+    console.log("✅ Reserva gravada no Sheety:", { data: date, horario: slot });
 
-    // 2️⃣ Enviar ao JotForm (campo oculto com Unique Name {typeA135})
+    // Enviar valor para o JotForm Custom Widget
     if (window.JFCustomWidget) {
-      const result = { value: respostaFinal, valid: true };
-      JFCustomWidget.sendData({ value: respostaFinal });
-      JFCustomWidget.sendSubmit(result);
-      console.log("✅ Reserva enviada ao JotForm");
-    } else {
-      console.warn("⚠️ JFCustomWidget não detetado");
+      JFCustomWidget.sendSubmit({ value: reservaFinal, valid: true });
+      console.log("✅ JotFormCustomWidget atualizado com sucesso");
     }
   } catch (err) {
     console.error("Erro ao reservar", err);
     alert("Erro ao reservar. Tenta novamente.");
   }
+}
+
+// ===============================
+// AJUSTAR IFRAME JOTFORM (opcional)
+// ===============================
+if (window.JFCustomWidget) {
+  JFCustomWidget.requestFrameResize({ height: 400 });
 }
