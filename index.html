@@ -1,37 +1,34 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8" />
-  <title>Reserva</title>
+  <meta charset="UTF-8">
+  <title>Reserva de Horário</title>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-    }
-    .slot {
-      padding: 10px;
+    body { font-family: sans-serif; padding: 20px; }
+    #horarios { margin-top: 15px; }
+    .hora {
+      padding: 8px;
       margin: 5px 0;
       border: 1px solid #ccc;
       cursor: pointer;
     }
-    .slot.selected {
+    .hora.disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    .hora.selected {
       background: #000;
       color: #fff;
     }
   </style>
 </head>
 <body>
+  <h2>Escolhe a data:</h2>
+  <input type="date" id="data" />
+  <div id="horarios"></div>
 
-  <h3>Seleciona um horário</h3>
-
-  <input type="date" id="datePicker" />
-
-  <div id="slots"></div>
-
-  <!-- Jotform Custom Widget API -->
-  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
-
-  <!-- Widget logic -->
+  <!-- JotForm Custom Widget API -->
+  <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
   <script src="widget.js"></script>
-
 </body>
 </html>
