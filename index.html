@@ -2,21 +2,33 @@
 <html lang="pt">
 <head>
   <meta charset="UTF-8" />
-  <title>Widget Reserva</title>
+  <title>Calendário</title>
+
+  <!-- Jotform Custom Widget API -->
+  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
 
   <style>
     body {
       font-family: Arial, sans-serif;
       margin: 0;
-      padding: 10px;
+      padding: 12px;
+    }
+
+    #calendar {
+      margin-bottom: 16px;
     }
 
     .slot {
       padding: 10px;
-      margin: 6px 0;
+      margin-bottom: 6px;
       border: 1px solid #ccc;
       cursor: pointer;
       border-radius: 4px;
+    }
+
+    .slot.disabled {
+      opacity: 0.4;
+      pointer-events: none;
     }
 
     .slot.selected {
@@ -25,15 +37,13 @@
     }
   </style>
 </head>
+
 <body>
 
-  <h3>Seleciona um horário</h3>
+  <input type="date" id="calendar" />
 
   <div id="slots"></div>
 
-  <!-- ⚠️ O SCRIPT DO JOTFORM TEM DE VIR ANTES -->
-  <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
   <script src="widget.js"></script>
-
 </body>
 </html>
