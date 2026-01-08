@@ -1,24 +1,24 @@
+<!-- index.html -->
 <!DOCTYPE html>
 <html lang="pt">
 <head>
   <meta charset="UTF-8">
-  <title>Calendário Widget</title>
+  <title>Calendário de Reservas</title>
   <style>
-    body { font-family: sans-serif; }
-    #slotsList button { margin: 4px; padding: 8px 12px; cursor: pointer; }
-    #slotsList p { margin: 4px 0; color: #888; }
+    #slots button { margin: 4px; padding: 8px; }
+    #slots p { margin: 4px; }
   </style>
 </head>
 <body>
   <h2>Escolha uma data:</h2>
   <input type="date" id="datePicker">
-  
+
   <div id="slots" hidden>
-    <h3>Escolha o horário:</h3>
+    <h3>Horários disponíveis:</h3>
     <div id="slotsList"></div>
   </div>
 
-  <!-- Carrega a JotForm Custom Widget API -->
+  <!-- Inclui a Custom Widget API -->
   <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
   <script src="widget.js"></script>
 </body>
