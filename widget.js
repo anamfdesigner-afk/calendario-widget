@@ -1,108 +1,118 @@
 // ===============================
 // CONFIGURAÇÃO
 // ===============================
-const SHEETY_URL = "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
+const SHEETY_GET_URL = "https://api.sheety.co/TEU_ID/agenda/vagas"; // GET para ler reservas
+const SHEETY_POST_URL = "https://api.sheety.co/TEU_ID/agenda/vagas"; // POST para gravar reserva
 
 const SLOTS = [
-  { time: "08:00-08:45", vagas: 3 },
-  { time: "08:45-09:30", vagas: 2 },
-  { time: "09:30-10:15", vagas: 3 },
-  { time: "10:15-11:00", vagas: 2 }
+  "08:00-08:45",
+  "08:45-09:30",
+  "09:30-10:15",
+  "10:15-11:00"
 ];
 
-let reservado = false;
-let respostaFinal = "";
+let selectedSlot = null;
+let selectedDate = null;
 
 // ===============================
 // ELEMENTOS DOM
 // ===============================
-const datePicker = document.getElementById("datePicker");
-const slotsDiv = document.getElementById("slots");
-const slotsList = document.getElementById("slotsList");
+const dataInput = document.getElementById("data");
+const container = document.getElementById("horarios");
 
 // ===============================
 // BLOQUEAR DIAS PASSADOS
 // ===============================
 const today = new Date().toISOString().split("T")[0];
-datePicker.min = today;
+dataInput.min = today;
 
 // ===============================
-// AO ESCOLHER O DIA
+// FUNÇÕES DE SHEETY
 // ===============================
-datePicker.addEventListener("change", async () => {
-  const selectedDate = datePicker.value;
-  console.log("📅 Data selecionada:", selectedDate);
-
-  reservado = false;
-  slotsDiv.hidden = false;
-  slotsList.innerHTML = "";
-
+async function carregarVagas(data) {
   try {
-    console.log("⏳ Fetching reservas do Sheety...");
-    const response = await fetch(SHEETY_URL);
-    const data = await response.json();
-    console.log("✅ Dados recebidos do Sheety:", data);
-
-    const reservas = data.folha1 || [];
-
-    SLOTS.forEach(slot => {
-      const usadas = reservas.filter(
-        r => r.data === selectedDate && r.horario === slot.time
-      ).length;
-
-      const restantes = slot.vagas - usadas;
-
-      if (restantes <= 0) {
-        const p = document.createElement("p");
-        p.textContent = `${slot.time} — Sem vagas`;
-        slotsList.appendChild(p);
-      } else {
-        const btn = document.createElement("button");
-        btn.textContent = `${slot.time} (${restantes} vagas)`;
-
-        btn.onclick = () => {
-          if (!reservado) {
-            reservar(selectedDate, slot.time, btn);
-          }
-        };
-
-        slotsList.appendChild(btn);
-      }
-    });
+    const res = await fetch(SHEETY_GET_URL);
+    const json = await res.json();
+    return json.vagas.filter(v => v.data === data).map(v => v.horario);
   } catch (err) {
-    console.error("Erro ao carregar vagas", err);
-    slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
+    console.error("Erro ao buscar vagas:", err);
+    return [];
   }
+}
+
+async function guardarReserva(data, horario) {
+  try {
+    await fetch(SHEETY_POST_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vaga: { data, horario } })
+    });
+    console.log("Reserva gravada:", data, horario);
+  } catch (err) {
+    console.error("Erro ao gravar reserva:", err);
+  }
+}
+
+// ===============================
+// FUNÇÕES JOTFORM CUSTOM WIDGET
+// ===============================
+function enviarJotForm(value) {
+  if (window.JFCustomWidget) {
+    const data = { value: value, valid: true };
+    JFCustomWidget.sendSubmit(data);
+    JFCustomWidget.sendData({ value });
+  } else {
+    console.warn("JFCustomWidget não detectado ainda.");
+  }
+}
+
+// ===============================
+// AO ESCOLHER DATA
+// ===============================
+dataInput.addEventListener("change", async () => {
+  container.innerHTML = "";
+  selectedSlot = null;
+  selectedDate = dataInput.value;
+
+  const ocupados = await carregarVagas(selectedDate);
+
+  SLOTS.forEach(hora => {
+    const div = document.createElement("div");
+    div.className = "hora";
+    div.textContent = ocupados.includes(hora) ? `${hora} — Ocupado` : `${hora} — Disponível`;
+
+    if (ocupados.includes(hora)) div.classList.add("disabled");
+
+    div.onclick = async () => {
+      // Limpar seleção anterior
+      document.querySelectorAll(".hora").forEach(h => h.classList.remove("selected"));
+      div.classList.add("selected");
+      selectedSlot = hora;
+
+      // Grava no Sheety
+      await guardarReserva(selectedDate, selectedSlot);
+
+      // Envia para o Jotform
+      const value = `${selectedDate} | ${selectedSlot}`;
+      enviarJotForm(value);
+
+      // Desativa outros horários
+      document.querySelectorAll(".hora").forEach(h => {
+        if (!h.classList.contains("selected")) h.classList.add("disabled");
+      });
+    };
+
+    container.appendChild(div);
+  });
 });
 
 // ===============================
-// RESERVAR + ENVIAR AO SHEETY
-// ===============================
-async function reservar(date, slot, clickedButton) {
-  reservado = true;
-
-  // Desactivar todos os botões
-  const buttons = slotsList.querySelectorAll("button");
-  buttons.forEach(btn => (btn.disabled = true));
-
-  // Feedback visual
-  clickedButton.textContent = `${slot} — Selecionado`;
-
-  try {
-    // 1️⃣ Guardar no Sheety
-    const res = await fetch(SHEETY_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ folha1: { data: date, horario: slot } })
-    });
-    const json = await res.json();
-    console.log("✅ Reserva gravada no Sheety:", json);
-
-    // 2️⃣ Guardar localmente para JotForm
-    respostaFinal = `${date} | ${slot}`;
-
-  } catch (err) {
-    console.error("Erro ao reservar", err);
-    alert("Erro ao reservar. Tenta novamente.");
-  }
+// SUBSCRIBE GETDATA (Email Builder / Preview)
+if (window.JFCustomWidget) {
+  JFCustomWidget.subscribe("getData", function() {
+    if (selectedDate && selectedSlot) {
+      return { value: `${selectedDate} | ${selectedSlot}` };
+    }
+    return { value: "" };
+  });
 }
