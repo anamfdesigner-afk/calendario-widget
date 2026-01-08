@@ -2,26 +2,21 @@
 <html lang="pt">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Calendário Widget</title>
+  <title>Calendário de Reservas</title>
   <style>
     body { font-family: sans-serif; padding: 20px; }
-    #slotsList button { margin: 5px 0; display: block; }
-    #slotsList p { margin: 5px 0; color: gray; }
+    #slotsList button { margin: 5px; padding: 8px 12px; }
+    #slotsList p { margin: 5px; color: red; }
   </style>
 </head>
 <body>
-
-  <h2>Escolhe uma data</h2>
-  <input type="date" id="datePicker" />
-
+  <h2>Escolha a data e horário</h2>
+  <input type="date" id="datePicker">
   <div id="slots" hidden>
-    <h3>Horários disponíveis</h3>
+    <h3>Horários disponíveis:</h3>
     <div id="slotsList"></div>
   </div>
 
-  <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
   <script src="widget.js"></script>
-
 </body>
 </html>
