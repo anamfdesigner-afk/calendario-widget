@@ -1,109 +1,89 @@
 const SHEETY_URL =
   "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
 
-let selectedDate = null;
-let selectedSlot = null;
-let reservas = [];
+const SLOTS = [
+  { time: "09:30-10:15", vagas: 3 },
+  { time: "10:15-11:00", vagas: 2 },
+  { time: "11:00-11:45", vagas: 3 }
+];
 
-const slotsContainer = document.getElementById("slots");
-const calendarInput = document.getElementById("calendar");
+let reservaFinal = "";
 
-/* ---------------- JOTFORM READY ---------------- */
+const datePicker = document.getElementById("datePicker");
+const slotsList = document.getElementById("slotsList");
+
+/* 🔹 bloquear dias passados */
+datePicker.min = new Date().toISOString().split("T")[0];
+
 JFCustomWidget.subscribe("ready", () => {
-  console.log("✅ Jotform widget ready");
-
-  JFCustomWidget.requestFrameResize({ height: 520 });
+  console.log("✅ Widget ready");
 });
 
-/* ---------------- LOAD RESERVAS ---------------- */
-async function loadReservas() {
+/* 🔹 escolher dia */
+datePicker.addEventListener("change", async () => {
+  const date = datePicker.value;
+  slotsList.innerHTML = "";
+
   const res = await fetch(SHEETY_URL);
   const data = await res.json();
-  reservas = data.folha1 || [];
-}
+  const reservas = data.folha1 || [];
 
-/* ---------------- GERAR HORÁRIOS ---------------- */
-function getSlots() {
-  return [
-    "09:30-10:15",
-    "10:15-11:00",
-    "11:00-11:45",
-    "14:00-14:45",
-    "14:45-15:30",
-    "15:30-16:15"
-  ];
-}
+  SLOTS.forEach(slot => {
+    const usadas = reservas.filter(
+      r => r.data === date && r.horario === slot.time
+    ).length;
 
-/* ---------------- RENDER SLOTS ---------------- */
-function renderSlots() {
-  slotsContainer.innerHTML = "";
-  selectedSlot = null;
+    const restantes = slot.vagas - usadas;
 
-  const usados = reservas
-    .filter(r => r.data === selectedDate)
-    .map(r => r.horario);
+    const btn = document.createElement("button");
 
-  getSlots().forEach(slot => {
-    const div = document.createElement("div");
-    div.className = "slot";
-    div.textContent = slot;
+    if (restantes <= 0) {
+      btn.textContent = `${slot.time} — sem vagas`;
+      btn.disabled = true;
+    } else {
+      btn.textContent = `${slot.time} (${restantes} vagas)`;
 
-    if (usados.includes(slot)) {
-      div.classList.add("disabled");
+      btn.onclick = () => {
+        document
+          .querySelectorAll("button")
+          .forEach(b => b.classList.remove("selected"));
+
+        btn.classList.add("selected");
+
+        reservaFinal = `${date} | ${slot.time}`;
+
+        /* 🔴 CRÍTICO */
+        JFCustomWidget.setFieldsValue({
+          ReservaFinal: reservaFinal
+        });
+
+        console.log("✅ ReservaFinal:", reservaFinal);
+      };
     }
 
-    div.onclick = () => {
-      document
-        .querySelectorAll(".slot")
-        .forEach(s => s.classList.remove("selected"));
-
-      div.classList.add("selected");
-      selectedSlot = slot;
-
-      const value = `${selectedDate} | ${selectedSlot}`;
-
-      /* 🔴 ESTE É O PASSO CRÍTICO */
-      JFCustomWidget.setFieldsValue({
-        ReservaFinal: value
-      });
-
-      console.log("✅ ReservaFinal set:", value);
-    };
-
-    slotsContainer.appendChild(div);
+    slotsList.appendChild(btn);
   });
-}
-
-/* ---------------- DATE CHANGE ---------------- */
-calendarInput.addEventListener("change", async e => {
-  selectedDate = e.target.value;
-
-  await loadReservas();
-  renderSlots();
 });
 
-/* ---------------- SUBMIT ---------------- */
+/* 🔹 submit */
 JFCustomWidget.subscribe("submit", async () => {
-  if (!selectedDate || !selectedSlot) {
+  if (!reservaFinal) {
     JFCustomWidget.sendSubmit({ valid: false });
     return;
   }
 
-  const value = `${selectedDate} | ${selectedSlot}`;
+  const [data, horario] = reservaFinal.split(" | ");
 
   await fetch(SHEETY_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      folha1: {
-        data: selectedDate,
-        horario: selectedSlot
-      }
+      folha1: { data, horario }
     })
   });
 
   JFCustomWidget.sendSubmit({
     valid: true,
-    value
+    value: reservaFinal
   });
 });
