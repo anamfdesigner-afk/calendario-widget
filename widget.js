@@ -13,7 +13,7 @@ document.addEventListener("DOMContentLoaded", () => {
   ];
 
   let reservado = false;
-  let RespostaFinal = "";
+  let respostaFinal = "";
 
   // ===============================
   // ELEMENTOS DOM
@@ -92,10 +92,10 @@ document.addEventListener("DOMContentLoaded", () => {
       console.log("✅ Reserva gravada no Sheety:", { data: date, horario: slot });
 
       // 2️⃣ Guardar valor para Jotform
-      RespostaFinal = `${date} | ${slot}`;
+      respostaFinal = `${date} | ${slot}`;
 
       if (window.JFCustomWidget) {
-        const data = { value: String(RespostaFinal), valid: true }; // sempre string
+        const data = { value: String(respostaFinal), valid: true }; // sempre string
         JFCustomWidget.sendData(data);
         JFCustomWidget.sendSubmit(data);
         console.log("✅ Enviado para JotForm:", data);
@@ -112,8 +112,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // SUBSCRIBIR PARA O FORM (GET DATA)
   // ===============================
   if (window.JFCustomWidget) {
-    JFCustomWidget.subscribe("getData", () => ({ value: String(RespostaFinal) }));
+    JFCustomWidget.subscribe("getData", () => ({ value: String(respostaFinal) }));
   }
 });
+
 
 
