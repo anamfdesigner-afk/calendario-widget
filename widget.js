@@ -1,8 +1,10 @@
 // ===============================
 // CONFIGURAÇÃO
 // ===============================
-const SHEETY_GET_URL = "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
-const SHEETY_POST_URL = "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
+const SHEETY_GET_URL =
+  "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
+const SHEETY_POST_URL =
+  "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
 
 const SLOTS = [
   { time: "08:00-08:45", vagas: 3 },
@@ -12,7 +14,7 @@ const SLOTS = [
 ];
 
 let reservado = false;
-let respostaFinal = "";
+let value = ""; // 👈 valor final da reserva
 
 // ===============================
 // ELEMENTOS DOM
@@ -32,6 +34,7 @@ datePicker.min = today;
 // ===============================
 datePicker.addEventListener("change", async () => {
   const selectedDate = datePicker.value;
+
   reservado = false;
   slotsDiv.hidden = false;
   slotsList.innerHTML = "";
@@ -55,9 +58,13 @@ datePicker.addEventListener("change", async () => {
       } else {
         const btn = document.createElement("button");
         btn.textContent = `${slot.time} (${restantes} vagas)`;
+
         btn.onclick = () => {
-          if (!reservado) reservar(selectedDate, slot.time, btn);
+          if (!reservado) {
+            reservar(selectedDate, slot.time, btn);
+          }
         };
+
         slotsList.appendChild(btn);
       }
     });
@@ -68,17 +75,36 @@ datePicker.addEventListener("change", async () => {
 });
 
 // ===============================
-// RESERVAR + JOTFORM + SHEETY
+// RESERVAR
 // ===============================
 async function reservar(date, slot, clickedButton) {
   reservado = true;
 
   // Desativar botões
-  slotsList.querySelectorAll("button").forEach(btn => btn.disabled = true);
+  slotsList.querySelectorAll("button").forEach(btn => (btn.disabled = true));
   clickedButton.textContent = `${slot} — Selecionado`;
 
+  // 👇 valor FINAL
+  value = `${date} | ${slot}`;
+  console.log("💾 Value:", value);
+
+  // ===============================
+  // ATUALIZAR HIDDEN FIELD
+  // ===============================
+  if (window.JFCustomWidget) {
+    JFCustomWidget.setFieldsValue({
+      respostaFinal: value
+    });
+
+    JFCustomWidget.sendData({ value });
+
+    console.log("✅ Hidden field atualizado");
+  }
+
+  // ===============================
+  // GUARDAR NO SHEETY
+  // ===============================
   try {
-    // 1️⃣ Guardar no Sheety
     await fetch(SHEETY_POST_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -86,36 +112,7 @@ async function reservar(date, slot, clickedButton) {
         folha1: { data: date, horario: slot }
       })
     });
-
-    // 2️⃣ Criar resposta final
-    respostaFinal = `${date} | ${slot}`;
-
-    // 3️⃣ ENVIAR PARA O HIDDEN FIELD DO JOTFORM
-    if (window.JFCustomWidget) {
-
-      // 🔴 ESTA É A LINHA CRÍTICA PARA O GOOGLE SHEET
-      JFCustomWidget.setFieldsValue({
-        respostaFinal: respostaFinal
-      });
-
-      // Enviar valor do widget
-      JFCustomWidget.sendData({
-        value: respostaFinal,
-        valid: true
-      });
-    }
-
   } catch (err) {
-    console.error("Erro ao reservar", err);
-    alert("Erro ao reservar. Tenta novamente.");
+    console.error("Erro ao reservar no Sheety", err);
   }
-}
-
-// ===============================
-// GET DATA (EDIÇÃO DE SUBMISSÕES)
-// ===============================
-if (window.JFCustomWidget) {
-  JFCustomWidget.subscribe("getData", () => ({
-    value: respostaFinal
-  }));
 }
