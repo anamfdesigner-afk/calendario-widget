@@ -1,41 +1,28 @@
+<!-- index.html -->
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8">
-  <title>Calendário de Reservas</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      padding: 20px;
-    }
-    #slots button {
-      margin: 5px;
-      padding: 8px 12px;
-      cursor: pointer;
-    }
-    #slots p {
-      margin: 5px 0;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calendário Widget</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  button { margin: 4px; padding: 6px 12px; cursor: pointer; }
+  p { margin: 4px 0; }
+</style>
 </head>
 <body>
 
-  <h2>Escolhe a data</h2>
-  <input type="date" id="datePicker">
+<h3>Escolhe uma data:</h3>
+<input type="date" id="datePicker">
 
-  <div id="slots" hidden>
-    <h3>Horários disponíveis</h3>
-    <div id="slotsList"></div>
-  </div>
+<div id="slots" hidden>
+  <h4>Horários disponíveis:</h4>
+  <div id="slotsList"></div>
+</div>
 
-  <!-- Campo hidden do JotForm -->
-  <input type="hidden" id="input_135" name="reservaFinal">
-
-  <!-- Biblioteca do JotForm Custom Widget -->
-  <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
-
-  <!-- Script do widget -->
-  <script src="widget.js"></script>
+<script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
+<script src="widget.js"></script>
 
 </body>
 </html>
