@@ -27,17 +27,6 @@ const today = new Date().toISOString().split("T")[0];
 datePicker.min = today;
 
 // ===============================
-// FUNÇÃO PARA AGUARDAR JOTFORM CUSTOM WIDGET
-// ===============================
-function waitForJotForm(callback) {
-  if (window.JFCustomWidget) {
-    callback();
-  } else {
-    setTimeout(() => waitForJotForm(callback), 50);
-  }
-}
-
-// ===============================
 // AO ESCOLHER O DIA
 // ===============================
 datePicker.addEventListener("change", async () => {
@@ -46,18 +35,21 @@ datePicker.addEventListener("change", async () => {
 
   reservado = false;
   slotsDiv.hidden = false;
-  slotsList.innerHTML = "<p>⏳ Carregando horários...</p>";
+  slotsList.innerHTML = "";
 
   try {
+    console.log("⏳ Fetching reservas do Sheety...");
     const response = await fetch(SHEETY_URL);
     const data = await response.json();
-    const reservas = data.folha1 || [];
     console.log("✅ Dados recebidos do Sheety:", data);
 
-    slotsList.innerHTML = ""; // limpa carregamento
+    const reservas = data.folha1 || [];
 
     SLOTS.forEach(slot => {
-      const usadas = reservas.filter(r => r.data === selectedDate && r.horario === slot.time).length;
+      const usadas = reservas.filter(
+        r => r.data === selectedDate && r.horario === slot.time
+      ).length;
+
       const restantes = slot.vagas - usadas;
 
       if (restantes <= 0) {
@@ -67,13 +59,16 @@ datePicker.addEventListener("change", async () => {
       } else {
         const btn = document.createElement("button");
         btn.textContent = `${slot.time} (${restantes} vagas)`;
+
         btn.onclick = () => {
-          if (!reservado) reservar(selectedDate, slot.time, btn);
+          if (!reservado) {
+            reservar(selectedDate, slot.time, btn);
+          }
         };
+
         slotsList.appendChild(btn);
       }
     });
-
   } catch (err) {
     console.error("Erro ao carregar vagas", err);
     slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
@@ -81,34 +76,30 @@ datePicker.addEventListener("change", async () => {
 });
 
 // ===============================
-// RESERVAR + ENVIAR AO SHEETY E JOTFORM
+// RESERVAR + ENVIAR AO SHEETY
 // ===============================
 async function reservar(date, slot, clickedButton) {
   reservado = true;
 
   // Desactivar todos os botões
-  slotsList.querySelectorAll("button").forEach(btn => btn.disabled = true);
+  const buttons = slotsList.querySelectorAll("button");
+  buttons.forEach(btn => (btn.disabled = true));
 
+  // Feedback visual
   clickedButton.textContent = `${slot} — Selecionado`;
 
   try {
     // 1️⃣ Guardar no Sheety
-    await fetch(SHEETY_URL, {
+    const res = await fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folha1: { data: date, horario: slot } })
     });
-    console.log("✅ Reserva gravada no Sheety:", { data: date, horario: slot });
+    const json = await res.json();
+    console.log("✅ Reserva gravada no Sheety:", json);
 
-    // 2️⃣ Guardar valor para JotForm
+    // 2️⃣ Guardar localmente para JotForm
     respostaFinal = `${date} | ${slot}`;
-
-    // Aguarda JotForm carregar
-    waitForJotForm(() => {
-      console.log("✅ JFCustomWidget detectado");
-      JFCustomWidget.sendData({ value: respostaFinal });
-      JFCustomWidget.sendSubmit({ valid: true, value: respostaFinal });
-    });
 
   } catch (err) {
     console.error("Erro ao reservar", err);
