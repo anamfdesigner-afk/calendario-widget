@@ -95,7 +95,7 @@ document.addEventListener("DOMContentLoaded", () => {
       RespostaFinal = `${date} | ${slot}`;
 
       if (window.JFCustomWidget) {
-        const data = { value: String(respostaFinal), valid: true }; // sempre string
+        const data = { value: String(RespostaFinal), valid: true }; // sempre string
         JFCustomWidget.sendData(data);
         JFCustomWidget.sendSubmit(data);
         console.log("✅ Enviado para JotForm:", data);
@@ -115,4 +115,5 @@ document.addEventListener("DOMContentLoaded", () => {
     JFCustomWidget.subscribe("getData", () => ({ value: String(RespostaFinal) }));
   }
 });
+
 
