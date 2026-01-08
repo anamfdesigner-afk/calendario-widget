@@ -1,19 +1,56 @@
+const SHEETY_URL =
+  "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
+
 let selectedDate = null;
-let selectedTime = null;
+let selectedSlot = null;
+let reservas = [];
 
-/**
- * Render simples de horários (exemplo)
- * Isto podes adaptar depois à lógica de vagas / sheety
- */
+const slotsContainer = document.getElementById("slots");
+const calendarInput = document.getElementById("calendar");
+
+/* ---------------- JOTFORM READY ---------------- */
+JFCustomWidget.subscribe("ready", () => {
+  console.log("✅ Jotform widget ready");
+
+  JFCustomWidget.requestFrameResize({ height: 520 });
+});
+
+/* ---------------- LOAD RESERVAS ---------------- */
+async function loadReservas() {
+  const res = await fetch(SHEETY_URL);
+  const data = await res.json();
+  reservas = data.folha1 || [];
+}
+
+/* ---------------- GERAR HORÁRIOS ---------------- */
+function getSlots() {
+  return [
+    "09:30-10:15",
+    "10:15-11:00",
+    "11:00-11:45",
+    "14:00-14:45",
+    "14:45-15:30",
+    "15:30-16:15"
+  ];
+}
+
+/* ---------------- RENDER SLOTS ---------------- */
 function renderSlots() {
-  const slots = ["10:00", "11:30", "14:00", "15:30"];
-  const container = document.getElementById("slots");
-  container.innerHTML = "";
+  slotsContainer.innerHTML = "";
+  selectedSlot = null;
 
-  slots.forEach(time => {
+  const usados = reservas
+    .filter(r => r.data === selectedDate)
+    .map(r => r.horario);
+
+  getSlots().forEach(slot => {
     const div = document.createElement("div");
     div.className = "slot";
-    div.innerText = time;
+    div.textContent = slot;
+
+    if (usados.includes(slot)) {
+      div.classList.add("disabled");
+    }
 
     div.onclick = () => {
       document
@@ -21,60 +58,52 @@ function renderSlots() {
         .forEach(s => s.classList.remove("selected"));
 
       div.classList.add("selected");
-      selectedTime = time;
+      selectedSlot = slot;
 
-      enviarParaJotform();
+      const value = `${selectedDate} | ${selectedSlot}`;
+
+      /* 🔴 ESTE É O PASSO CRÍTICO */
+      JFCustomWidget.setFieldsValue({
+        ReservaFinal: value
+      });
+
+      console.log("✅ ReservaFinal set:", value);
     };
 
-    container.appendChild(div);
+    slotsContainer.appendChild(div);
   });
 }
 
-/**
- * 🔴 FUNÇÃO CRÍTICA
- * Envia o valor para o Hidden Field ReservaFinal
- * ANTES do submit
- */
-function enviarParaJotform() {
-  if (!selectedDate || !selectedTime) return;
+/* ---------------- DATE CHANGE ---------------- */
+calendarInput.addEventListener("change", async e => {
+  selectedDate = e.target.value;
 
-  const valorFinal = `${selectedDate} ${selectedTime}`;
-  console.log("A enviar ReservaFinal:", valorFinal);
-
-  // 👉 Atualiza o hidden field
-  JFCustomWidget.setFieldsValue({
-    ReservaFinal: valorFinal
-  });
-
-  // 👉 Garante que o valor fica guardado
-  JFCustomWidget.sendData({
-    value: valorFinal
-  });
-}
-
-/**
- * 🔗 Ligação ao Jotform
- */
-JFCustomWidget.subscribe("ready", function (data) {
-  console.log("Widget pronto");
-
-  // Exemplo: data atual
-  const hoje = new Date();
-  selectedDate = hoje.toISOString().split("T")[0];
-
+  await loadReservas();
   renderSlots();
 });
 
-/**
- * 🔒 Submit final (garante que o campo não vai vazio)
- */
-JFCustomWidget.subscribe("submit", function () {
-  const valorFinal = selectedDate && selectedTime
-    ? `${selectedDate} ${selectedTime}`
-    : "";
+/* ---------------- SUBMIT ---------------- */
+JFCustomWidget.subscribe("submit", async () => {
+  if (!selectedDate || !selectedSlot) {
+    JFCustomWidget.sendSubmit({ valid: false });
+    return;
+  }
+
+  const value = `${selectedDate} | ${selectedSlot}`;
+
+  await fetch(SHEETY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      folha1: {
+        data: selectedDate,
+        horario: selectedSlot
+      }
+    })
+  });
 
   JFCustomWidget.sendSubmit({
-    valid: !!valorFinal,
-    value: valorFinal
+    valid: true,
+    value
   });
 });
