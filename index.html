@@ -1,28 +1,23 @@
 <!DOCTYPE html>
 <html lang="pt">
 <head>
-  <meta charset="UTF-8" />
-  <script src="https://js.jotform.com/JotFormCustomWidget.min.js"></script>
-
+  <meta charset="UTF-8">
+  <title>Calendário de Reservas</title>
   <style>
-    button {
-      display: block;
-      margin: 6px 0;
-      padding: 10px;
-      width: 100%;
-    }
-    button.selected {
-      background: black;
-      color: white;
-    }
+    #slots button { margin: 5px; padding: 8px 12px; }
+    #slots p { margin: 5px 0; font-style: italic; color: gray; }
   </style>
 </head>
-
 <body>
+  <h2>Escolha a data</h2>
+  <input type="date" id="datePicker">
+  <div id="slots" hidden>
+    <h3>Horários disponíveis</h3>
+    <div id="slotsList"></div>
+  </div>
 
-  <input type="date" id="datePicker" />
-  <div id="slotsList"></div>
-
+  <!-- JotForm Custom Widget API -->
+  <script src="//js.jotform.com/JotFormCustomWidget.min.js"></script>
   <script src="widget.js"></script>
 </body>
 </html>
