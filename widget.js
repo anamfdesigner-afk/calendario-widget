@@ -1,3 +1,4 @@
+// widget.js
 // ===============================
 // CONFIGURAÇÃO
 // ===============================
@@ -27,21 +28,6 @@ const today = new Date().toISOString().split("T")[0];
 datePicker.min = today;
 
 // ===============================
-// FUNÇÃO PARA CARREGAR RESERVAS
-// ===============================
-async function carregarReservas(selectedDate) {
-  try {
-    const response = await fetch(SHEETY_URL);
-    const data = await response.json();
-    const reservas = data.folha1 || [];
-    return reservas.filter(r => r.data === selectedDate);
-  } catch (err) {
-    console.error("Erro ao carregar vagas do Sheety:", err);
-    return [];
-  }
-}
-
-// ===============================
 // AO ESCOLHER O DIA
 // ===============================
 datePicker.addEventListener("change", async () => {
@@ -50,31 +36,40 @@ datePicker.addEventListener("change", async () => {
   slotsDiv.hidden = false;
   slotsList.innerHTML = "";
 
-  console.log("📅 Data selecionada:", selectedDate);
+  try {
+    console.log("⏳ Fetching reservas do Sheety...");
+    const response = await fetch(SHEETY_URL);
+    const data = await response.json();
+    const reservas = data.folha1 || [];
+    console.log("✅ Dados recebidos do Sheety:", reservas);
 
-  const reservasDia = await carregarReservas(selectedDate);
+    SLOTS.forEach(slot => {
+      const usadas = reservas.filter(r => r.data === selectedDate && r.horario === slot.time).length;
+      const restantes = slot.vagas - usadas;
 
-  SLOTS.forEach(slot => {
-    const usadas = reservasDia.filter(r => r.horario === slot.time).length;
-    const restantes = slot.vagas - usadas;
-
-    if (restantes <= 0) {
-      const p = document.createElement("p");
-      p.textContent = `${slot.time} — Sem vagas`;
-      slotsList.appendChild(p);
-    } else {
-      const btn = document.createElement("button");
-      btn.textContent = `${slot.time} (${restantes} vagas)`;
-      btn.onclick = () => {
-        if (!reservado) reservar(selectedDate, slot.time, btn);
-      };
-      slotsList.appendChild(btn);
-    }
-  });
+      if (restantes <= 0) {
+        const p = document.createElement("p");
+        p.textContent = `${slot.time} — Sem vagas`;
+        slotsList.appendChild(p);
+      } else {
+        const btn = document.createElement("button");
+        btn.textContent = `${slot.time} (${restantes} vagas)`;
+        btn.onclick = () => {
+          if (!reservado) {
+            reservar(selectedDate, slot.time, btn);
+          }
+        };
+        slotsList.appendChild(btn);
+      }
+    });
+  } catch (err) {
+    console.error("Erro ao carregar vagas", err);
+    slotsList.innerHTML = "<p>Erro ao carregar vagas.</p>";
+  }
 });
 
 // ===============================
-// RESERVAR + ENVIAR
+// RESERVAR + ENVIAR AO SHEETY + JOTFORM
 // ===============================
 async function reservar(date, slot, clickedButton) {
   reservado = true;
@@ -86,39 +81,33 @@ async function reservar(date, slot, clickedButton) {
   // Feedback visual
   clickedButton.textContent = `${slot} — Selecionado`;
 
-  // Monta a resposta final
   respostaFinal = `${date} | ${slot}`;
-  console.log("💾 Resposta final:", respostaFinal);
 
-  // 1️⃣ Atualizar campo hidden no JotForm
-  const hiddenField = document.getElementById("input_135"); 
-  if (hiddenField) {
-    hiddenField.value = respostaFinal;
-    console.log("✅ Campo hidden preenchido:", hiddenField.value);
-  }
-
-  // 2️⃣ Enviar valor ao JotForm Custom Widget API
-  if (window.JFCustomWidget) {
-    JFCustomWidget.sendData({ value: respostaFinal });
-    JFCustomWidget.sendSubmit({ value: respostaFinal, valid: true });
-    console.log("✅ Valor enviado ao JotForm via Custom Widget API");
-  } else {
-    console.warn("⚠️ JFCustomWidget não detectado");
-  }
-
-  // 3️⃣ Guardar no Sheety
   try {
-    const res = await fetch(SHEETY_URL, {
+    // 1️⃣ Guardar no Sheety
+    await fetch(SHEETY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        folha1: { data: date, horario: slot }
+        folha1: {
+          data: date,
+          horario: slot
+        }
       })
     });
-    const data = await res.json();
-    console.log("✅ Reserva gravada no Sheety:", data);
+    console.log("✅ Reserva gravada no Sheety");
+
+    // 2️⃣ Enviar ao JotForm (campo oculto com Unique Name {typeA135})
+    if (window.JFCustomWidget) {
+      const result = { value: respostaFinal, valid: true };
+      JFCustomWidget.sendData({ value: respostaFinal });
+      JFCustomWidget.sendSubmit(result);
+      console.log("✅ Reserva enviada ao JotForm");
+    } else {
+      console.warn("⚠️ JFCustomWidget não detetado");
+    }
   } catch (err) {
-    console.error("⚠️ Erro ao gravar no Sheety:", err);
+    console.error("Erro ao reservar", err);
     alert("Erro ao reservar. Tenta novamente.");
   }
 }
