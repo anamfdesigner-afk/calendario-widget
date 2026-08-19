@@ -1,12 +1,89 @@
+/* ===============================
+   Calendário de Reservas — widget JotForm
+   Colar este ficheiro no painel CSS do Widget Builder.
+   =============================== */
+
+/* Garantir que o atributo hidden funciona mesmo com temas do JotForm */
+[hidden] {
+  display: none !important;
+}
+
 body {
   font-family: Arial, sans-serif;
   padding: 16px;
+  margin: 0;
+  background: transparent;
 }
 
-button {
+h2, h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+#datePicker {
+  padding: 8px;
+  font-size: 14px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  max-width: 100%;
+}
+
+/* ===============================
+   Botões de horário
+   =============================== */
+#slotsList button {
   display: block;
   margin: 6px 0;
-  padding: 8px;
+  padding: 10px;
   width: 100%;
   cursor: pointer;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  color: #222;
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+}
+
+#slotsList button:hover {
+  border-color: #888;
+  background: #f4f4f4;
+}
+
+/* Horário escolhido.
+   Especificidade alta + !important porque o tema do formulário
+   injeta CSS dentro do iframe do widget e sobrepõe-se a regras simples. */
+#slotsList button.selecionado,
+#slotsList button[aria-pressed="true"] {
+  background: #2b7a2b !important;
+  border-color: #1e5c1e !important;
+  color: #fff !important;
+  font-weight: bold !important;
+}
+
+/* Slots esgotados */
+#slots p {
+  margin: 5px 0;
+  font-style: italic;
+  color: gray;
+}
+
+/* ===============================
+   Estado e diagnóstico
+   =============================== */
+#estado {
+  margin-top: 10px;
+  font-weight: bold;
+}
+
+#debug {
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px dashed #c00;
+  background: #fff8f8;
+  font: 12px/1.5 monospace;
+  color: #900;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
