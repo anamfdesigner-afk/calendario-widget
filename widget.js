@@ -8,13 +8,14 @@ const SHEETY_GET_URL =
 const SHEETY_COLLECTION = "folha1";
 
 // Nome da coluna (camelCase) onde a reserva fica gravada na folha.
+// O Sheety converte o cabeçalho "Resultado" na chave "resultado".
 // Confirmar na linha "Colunas na folha:" do painel de diagnóstico.
-const COLUNA_RESERVA = "reserva";
+const COLUNA_RESERVA = "resultado";
 
 // LABEL exata do campo Short Text criado no JotForm que vai receber
 // uma cópia do valor. É este campo normal que a integração exporta.
 // Pôr "" para desligar o espelho.
-const CAMPO_ESPELHO_LABEL = "Reserva";
+const CAMPO_ESPELHO_LABEL = "Resultado";
 
 // Bloquear submissão sem horário escolhido
 const OBRIGATORIO = true;
