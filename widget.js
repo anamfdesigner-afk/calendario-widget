@@ -1,20 +1,33 @@
 // ===============================
 // CONFIGURAÇÃO
 // ===============================
+// ATENÇÃO: este URL ainda aponta para a folha ANTIGA (colunas
+// data/horario). Depois de apontar o projeto Sheety à folha das
+// submissões do JotForm ("Breakfast at Montecarmo12" / aba
+// "Form responses"), substituir este URL pelo novo endpoint do
+// Sheety. Enquanto isso não acontecer, o widget continua a contar
+// vagas na folha antiga e as reservas novas não descontam vagas.
 const SHEETY_GET_URL =
   "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
 
-// Nome da folha tal como o Sheety a devolve no JSON do GET
+// Nome da folha tal como o Sheety a devolve no JSON do GET.
+// Se não existir, usamos automaticamente a primeira coleção que vier
+// na resposta — assim mudar de folha não parte a contagem.
 const SHEETY_COLLECTION = "folha1";
 
 // Nomes das colunas (camelCase) tal como o Sheety as devolve.
-// A folha ATUAL usa duas colunas separadas: "data" e "horario".
-// Versões antigas gravavam tudo numa coluna combinada
-// ("2026-08-20 | 08:45-09:30") — COLUNA_RESERVA cobre esse caso antigo.
-// Confirmar na linha "Colunas na folha:" do painel de diagnóstico.
+//
+// Há duas formas possíveis de guardar a reserva:
+//   a) duas colunas separadas: "data" + "horario"
+//   b) uma coluna combinada: "2026-09-05 | 10:15-11:00"
+//
+// A folha das submissões do JotForm usa a forma (b), na coluna
+// "reserva" (a label do campo é "Reserva"). Aceitamos as duas formas
+// e vários nomes possíveis, porque foi precisamente um nome de coluna
+// errado que fez as vagas nunca descerem.
 const COLUNA_DATA = "data";
 const COLUNA_HORARIO = "horario";
-const COLUNA_RESERVA = "resultado";
+const COLUNAS_RESERVA = ["reserva", "resultado", "respostaFinal", "typeA137"];
 
 // LABEL exata do campo Short Text criado no JotForm que vai receber
 // uma cópia do valor. É este campo normal que a integração exporta.
@@ -108,18 +121,38 @@ function normalizarData(v) {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : t;
 }
 
+// Aceita espaçamento diferente à volta do "|" ("a|b" == "a | b").
+const FORMATO_RESERVA = /^\d{4}-\d{2}-\d{2}\s*\|/;
+
+function normalizarReserva(v) {
+  return String(v == null ? "" : v).trim().replace(/\s*\|\s*/, " | ");
+}
+
+// Procura o valor combinado numa linha. Primeiro pelos nomes de coluna
+// conhecidos; se nenhum servir, aceita QUALQUER coluna cujo conteúdo
+// tenha o formato "AAAA-MM-DD | HH:MM-HH:MM". Essa última rede evita
+// que um nome de coluna inesperado volte a esconder as reservas.
+function valorCombinado(r) {
+  for (const c of COLUNAS_RESERVA) {
+    const v = normalizarReserva(r[c]);
+    if (v) return v;
+  }
+  for (const k of Object.keys(r)) {
+    const v = normalizarReserva(r[k]);
+    if (FORMATO_RESERVA.test(v)) return v;
+  }
+  return "";
+}
+
 // Uma linha da folha ocupa este slot se:
 //  - as colunas separadas "data"+"horario" coincidirem, OU
-//  - a coluna combinada "resultado" for igual a "data | horario".
-// Aceitar as duas formas evita que a contagem volte a falhar em
-// silêncio se o formato da folha mudar.
+//  - a coluna combinada for igual a "data | horario".
 function linhaOcupaSlot(r, selectedDate, slotTime) {
   const d = normalizarData(r[COLUNA_DATA]);
   const h = String(r[COLUNA_HORARIO] == null ? "" : r[COLUNA_HORARIO]).trim();
   if (d && h) return d === selectedDate && h === slotTime;
 
-  const combinado = String(r[COLUNA_RESERVA] == null ? "" : r[COLUNA_RESERVA]).trim();
-  return combinado === formatarValor(selectedDate, slotTime);
+  return valorCombinado(r) === formatarValor(selectedDate, slotTime);
 }
 
 // ===============================
@@ -197,15 +230,29 @@ async function carregarSlots(selectedDate) {
     // Já há um pedido mais recente: esta resposta está velha.
     if (minhaGeracao !== geracao) return;
 
-    reservas = data[SHEETY_COLLECTION] || [];
+    // O nome da coleção é o nome da aba da folha. Se apontarmos o
+    // Sheety a outra folha (ex.: "Form responses" -> "formResponses"),
+    // o nome muda. Em vez de partir, usamos a primeira coleção que
+    // vier na resposta.
+    reservas = data[SHEETY_COLLECTION];
+    if (!Array.isArray(reservas)) {
+      const chave = Object.keys(data).find(k => Array.isArray(data[k]));
+      if (chave) {
+        reservas = data[chave];
+        log(`Coleção "${SHEETY_COLLECTION}" não existe; a usar "${chave}".`);
+      } else {
+        reservas = [];
+        log("AVISO: a resposta do Sheety não tem nenhuma lista de linhas.");
+      }
+    }
 
     if (reservas.length) {
       log("Colunas na folha: " + Object.keys(reservas[0]).join(", "));
       const separadas = reservas.filter(
         r => r[COLUNA_DATA] && r[COLUNA_HORARIO]
       ).length;
-      const combinadas = reservas.filter(r => r[COLUNA_RESERVA]).length;
-      log(`${reservas.length} linhas: ${separadas} com "${COLUNA_DATA}"+"${COLUNA_HORARIO}", ${combinadas} com "${COLUNA_RESERVA}"`);
+      const combinadas = reservas.filter(r => valorCombinado(r)).length;
+      log(`${reservas.length} linhas: ${separadas} com "${COLUNA_DATA}"+"${COLUNA_HORARIO}", ${combinadas} com reserva combinada`);
       if (separadas === 0 && combinadas === 0) {
         log("AVISO: nenhuma coluna reconhecida. As vagas nunca vão descer.");
       }
