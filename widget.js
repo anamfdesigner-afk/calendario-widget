@@ -48,6 +48,12 @@ const CAMPO_ESPELHO_ID = "135";
 // Bloquear submissão sem horário escolhido
 const OBRIGATORIO = true;
 
+// Quanto tempo esperamos pela revalidação das vagas na submissão.
+// Se o Sheety não responder neste tempo, DEIXAMOS PASSAR: bloquear
+// todas as reservas porque a API está lenta é pior do que o risco de
+// uma reserva a mais.
+const TIMEOUT_REVALIDACAO_MS = 4000;
+
 // Painel de diagnóstico. Fica DESLIGADO para quem preenche o formulário
 // (aparecia como uma caixa vermelha dentro do formulário publicado).
 // Para ligar durante testes há duas maneiras:
@@ -203,6 +209,46 @@ function espelharEmCampo(v) {
 }
 
 // ===============================
+// LEITURA DA FOLHA
+// ===============================
+// Usado tanto ao mostrar os horários como ao revalidar na submissão,
+// para que as duas contagens não possam divergir.
+async function buscarReservas() {
+  const response = await fetch(SHEETY_GET_URL, { cache: "no-store" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const data = await response.json();
+
+  // O nome da coleção é o nome da aba da folha. Se apontarmos o
+  // Sheety a outra folha (ex.: "Form responses" -> "formResponses"),
+  // o nome muda. Em vez de partir, usamos a primeira coleção que
+  // vier na resposta.
+  let linhas = data[SHEETY_COLLECTION];
+  if (!Array.isArray(linhas)) {
+    const chave = Object.keys(data).find(k => Array.isArray(data[k]));
+    if (chave) {
+      linhas = data[chave];
+      log(`Coleção "${SHEETY_COLLECTION}" não existe; a usar "${chave}".`);
+    } else {
+      linhas = [];
+      log("AVISO: a resposta do Sheety não tem nenhuma lista de linhas.");
+    }
+  }
+  return linhas;
+}
+
+function limiteDoSlot(slotTime) {
+  const def = SLOTS.find(s => s.time === slotTime);
+  return def ? def.vagas : 0;
+}
+
+function vagasRestantes(reservas, date, slotTime) {
+  const usadas = reservas.filter(
+    r => linhaOcupaSlot(r, date, slotTime)
+  ).length;
+  return limiteDoSlot(slotTime) - usadas;
+}
+
+// ===============================
 // CARREGAR HORÁRIOS DE UM DIA
 // ===============================
 async function carregarSlots(selectedDate) {
@@ -223,28 +269,10 @@ async function carregarSlots(selectedDate) {
 
   let reservas = [];
   try {
-    const response = await fetch(SHEETY_GET_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
+    reservas = await buscarReservas();
 
     // Já há um pedido mais recente: esta resposta está velha.
     if (minhaGeracao !== geracao) return;
-
-    // O nome da coleção é o nome da aba da folha. Se apontarmos o
-    // Sheety a outra folha (ex.: "Form responses" -> "formResponses"),
-    // o nome muda. Em vez de partir, usamos a primeira coleção que
-    // vier na resposta.
-    reservas = data[SHEETY_COLLECTION];
-    if (!Array.isArray(reservas)) {
-      const chave = Object.keys(data).find(k => Array.isArray(data[k]));
-      if (chave) {
-        reservas = data[chave];
-        log(`Coleção "${SHEETY_COLLECTION}" não existe; a usar "${chave}".`);
-      } else {
-        reservas = [];
-        log("AVISO: a resposta do Sheety não tem nenhuma lista de linhas.");
-      }
-    }
 
     if (reservas.length) {
       log("Colunas na folha: " + Object.keys(reservas[0]).join(", "));
@@ -271,10 +299,7 @@ async function carregarSlots(selectedDate) {
   slotsList.textContent = "";
 
   SLOTS.forEach(slot => {
-    const usadas = reservas.filter(
-      r => linhaOcupaSlot(r, selectedDate, slot.time)
-    ).length;
-    const restantes = slot.vagas - usadas;
+    const restantes = vagasRestantes(reservas, selectedDate, slot.time);
 
     if (restantes <= 0) {
       const p = document.createElement("p");
@@ -365,6 +390,31 @@ function iniciarUI() {
 iniciarUI();
 
 // ===============================
+// REVALIDAÇÃO NA SUBMISSÃO
+// ===============================
+// As vagas são lidas quando o dia é aberto. Entre esse momento e a
+// submissão pode passar muito tempo, e outra pessoa pode ficar com o
+// último lugar — dois hóspedes viam "1 vaga" e ambos reservavam.
+// Aqui voltamos a contar imediatamente antes de submeter.
+//
+// LIMITE: isto encurta a janela, não a fecha. Duas submissões
+// simultâneas podem passar as duas na verificação. Fechar a janela por
+// completo exige uma reserva atómica do lado do servidor, que o Sheety
+// não oferece.
+async function slotAindaTemVagas(date, slot) {
+  try {
+    const reservas = await buscarReservas();
+    const restantes = vagasRestantes(reservas, date, slot);
+    log(`Revalidação: ${slot} em ${date} -> ${restantes} vaga(s).`);
+    return { cheio: restantes <= 0 };
+  } catch (e) {
+    // Falha de rede: não bloqueamos (ver TIMEOUT_REVALIDACAO_MS).
+    log("Revalidação falhou (" + e.message + "): a deixar passar.");
+    return { cheio: false };
+  }
+}
+
+// ===============================
 // LIGAÇÃO AO JOTFORM
 // ===============================
 if (!temJF) {
@@ -404,11 +454,51 @@ if (!temJF) {
       return;
     }
 
-    espelharEmCampo(value);
+    // Sem horário escolhido e não obrigatório: nada para revalidar.
+    if (value === "") {
+      JFCustomWidget.sendSubmit({ valid: true, value: value });
+      return;
+    }
 
-    JFCustomWidget.sendSubmit({
-      valid: true,
-      value: value
+    const partes = value.split("|");
+    const dataEscolhida = (partes[0] || "").trim();
+    const slotEscolhido = (partes[1] || "").trim();
+
+    // Promise.race: ou a revalidação responde, ou desistimos e
+    // deixamos passar. Nunca deixamos a submissão pendurada.
+    const desistir = new Promise(resolve => {
+      setTimeout(() => resolve({ indeterminado: true }), TIMEOUT_REVALIDACAO_MS);
     });
+
+    Promise.race([slotAindaTemVagas(dataEscolhida, slotEscolhido), desistir])
+      .then(r => {
+        if (r && r.cheio) {
+          log(`RECUSADO: ${slotEscolhido} ficou sem vagas entre a escolha e a submissão.`);
+          value = "";
+          espelharEmCampo("");
+          carregarSlots(dataEscolhida);
+          // showWidgetError já envia sendSubmit({valid:false}).
+          JFCustomWidget.showWidgetError(
+            "Esse horário acabou de ficar sem vagas. Escolha outro."
+          );
+          return;
+        }
+
+        if (r && r.indeterminado) {
+          log("Revalidação sem resposta em tempo útil: a deixar passar.");
+        }
+
+        espelharEmCampo(value);
+        JFCustomWidget.sendSubmit({ valid: true, value: value });
+      })
+      .catch(e => {
+        // Nunca deixar a submissão pendurada. O formulário espera uma
+        // resposta nossa (a lib envia primeiro um {initial:true}); se
+        // aqui estourasse uma exceção, o hóspede ficava preso no botão
+        // de submeter para sempre.
+        log("ERRO na revalidação: " + e.message + " — a deixar passar.");
+        espelharEmCampo(value);
+        JFCustomWidget.sendSubmit({ valid: true, value: value });
+      });
   });
 }
