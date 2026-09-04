@@ -13,10 +13,17 @@ body {
   padding: 16px;
   margin: 0;
   background: transparent;
+  line-height: 1.4;
 }
 
+/* ===============================
+   ESPAÇAMENTO ENTRE BLOCOS
+   Os três blocos — data, horários e estado — estavam colados uns aos
+   outros. O iframe cresce sozinho: o ajustarAltura() no widget.js usa
+   scrollHeight, por isso não é preciso mexer na altura à mão.
+   =============================== */
 h2, h3 {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
   font-size: 16px;
 }
 
@@ -28,13 +35,23 @@ h2, h3 {
   max-width: 100%;
 }
 
+/* data -> horários */
+#slots {
+  margin-top: 24px;
+}
+
+/* "Horários disponíveis" -> primeiro botão */
+#slotsList {
+  margin-top: 12px;
+}
+
 /* ===============================
    Botões de horário
    =============================== */
 #slotsList button {
   display: block;
-  margin: 6px 0;
-  padding: 10px;
+  margin: 10px 0;
+  padding: 12px;
   width: 100%;
   cursor: pointer;
   border: 1px solid #bbb;
@@ -64,7 +81,7 @@ h2, h3 {
 
 /* Slots esgotados */
 #slots p {
-  margin: 5px 0;
+  margin: 10px 0;
   font-style: italic;
   color: gray;
 }
@@ -73,12 +90,12 @@ h2, h3 {
    Estado e diagnóstico
    =============================== */
 #estado {
-  margin-top: 10px;
+  margin-top: 24px;
   font-weight: bold;
 }
 
 #debug {
-  margin-top: 12px;
+  margin-top: 24px;
   padding: 8px;
   border: 1px dashed #c00;
   background: #fff8f8;
