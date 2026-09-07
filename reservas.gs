@@ -335,7 +335,15 @@ function ioReal_() {
     lerReservas: function () { return lerTudo_(ABA_RESERVAS) || [CABECALHO_RESERVAS]; },
     lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
     lerSubmissoes: function () { return lerTudo_(ABA_SUBMISSOES); },
-    acrescentar: function (linha) { folha_(ABA_RESERVAS, true).appendRow(linha); },
+    acrescentar: function (linha) {
+      folha_(ABA_RESERVAS, true).appendRow(linha);
+      // Sem isto, o doPost pode largar o lock antes do appendRow ficar
+      // visível a uma leitura seguinte, e o pedido seguinte lê a folha sem
+      // ver o lugar que acabou de ser ocupado: as duas reservas ganham o
+      // último lugar, o que é exatamente o que este ficheiro existe para
+      // impedir.
+      SpreadsheetApp.flush();
+    },
     expirar: function (indices) {
       var aba = folha_(ABA_RESERVAS, true);
       for (var i = 0; i < indices.length; i++) {
@@ -486,6 +494,11 @@ if (typeof module !== "undefined") {
     colunaReserva_: colunaReserva_,
     contarSubmissoes_: contarSubmissoes_,
     planoReconciliacao_: planoReconciliacao_,
-    reservar_: reservar_
+    reservar_: reservar_,
+    // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
+    // testes de unidade. É exportada mesmo assim para pinar, com uma folha
+    // e um SpreadsheetApp esboçados, a aritmética de índices e as chamadas
+    // a flush() que só se veem aqui — ver os testes de "ioReal_".
+    ioReal_: ioReal_
   };
 }

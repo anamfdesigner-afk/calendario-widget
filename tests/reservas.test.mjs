@@ -395,3 +395,32 @@ test("reservar_ propaga os erros de validação", () => {
     { ok: false, erro: "horario_desconhecido" }
   );
 });
+
+// ===============================
+// ioReal_ (E/S real, com SpreadsheetApp esboçado)
+// ===============================
+// Estes testes carregam o .gs de novo com um SpreadsheetApp falso, porque o
+// `gs` do topo do ficheiro já foi carregado sem stub nenhum — o parâmetro
+// SpreadsheetApp fica preso ao valor (undefined) que tinha nessa altura.
+
+test("ioReal_.acrescentar dá flush depois do appendRow", () => {
+  // Sem o flush, o doPost pode largar o lock antes de o appendRow ficar
+  // visível, e o pedido seguinte lê a folha sem ver o lugar já ocupado.
+  const chamadas = { appendRow: [], flush: 0 };
+  const folhaFalsa = {
+    getLastRow: () => 1, // aba já tem cabeçalho: não há que semear nada aqui
+    appendRow: linha => chamadas.appendRow.push(linha)
+  };
+  const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
+  const gsComStub = carregarGs(new URL("../reservas.gs", import.meta.url).pathname, {
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => ssFalso,
+      flush: () => { chamadas.flush++; }
+    }
+  });
+
+  gsComStub.ioReal_().acrescentar(["t1", "2026-09-08", "08:00-08:45", new Date(), "activo"]);
+
+  assert.equal(chamadas.appendRow.length, 1);
+  assert.equal(chamadas.flush, 1);
+});
