@@ -26,6 +26,10 @@ var ESTADO_EXPIRADO = "expirado";
 
 var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
 
+// Chave nas ScriptProperties onde vive a marca de água das submissões
+// (ver submissoesFiaveis_).
+var CHAVE_MARCA = "marcaSubmissoes";
+
 var JANELA_ORFAS_MS = 20 * 60 * 1000;
 var ESPERA_LOCK_MS = 20000;
 var ESPERA_LOCK_GET_MS = 5000;
@@ -252,6 +256,73 @@ function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
   return expirar;
 }
 
+// A guarda do colunaReserva_ é ao nível da COLUNA: basta UMA linha com
+// valor no formato certo. A premissa de que a reconciliação precisa é por
+// LINHA: toda a reserva genuína deixou uma submissão com o seu valor.
+//
+// O gatilho realista é a história deste repositório: alguém renomeia ou
+// remapeia o campo `Reserva` no JotForm. O setFieldsValueByLabel é um
+// postMessage sem resposta, onde um rótulo errado é indistinguível de
+// sucesso — foi exatamente esse o erro que passou muito tempo sem se notar
+// aqui. O espelho deixa de escrever, as linhas históricas válidas mantêm o
+// colunaReserva_ satisfeito, cada reserva nova parece órfã, e 20 minutos
+// depois de cada reserva o lugar é libertado e revendido, em silêncio.
+//
+// Por isso recusamos reconciliar quando as provas parecem INCOMPLETAS, e
+// não apenas quando faltam de todo. `marca` é a contagem de linhas da
+// Form responses registada na instalação: as linhas anteriores estão
+// isentas (a folha tem ~49 linhas históricas cujo `Reserva` nunca foi
+// escrito, e essas não podem travar a reconciliação para sempre), mas
+// todas as posteriores têm de trazer uma reserva legível. O widget tem
+// OBRIGATORIO = true, logo uma submissão nova sem reserva não é um
+// hóspede que não escolheu: é o espelho partido.
+//
+// O resultado é trocar uma sobre-reserva silenciosa por uma libertação
+// conservadora a menos, que é a direção escolhida em todo o resto deste
+// desenho.
+function submissoesFiaveis_(submissoes, idxColuna, marca) {
+  if (idxColuna < 0) return false;
+  var inicio = marca > 1 ? marca : 1;
+  for (var i = inicio; i < (submissoes || []).length; i++) {
+    var v = normalizarReserva_((submissoes[i] || [])[idxColuna]);
+    if (!FORMATO_RESERVA_COMPLETO.test(v)) return false;
+  }
+  return true;
+}
+
+// Marca de água ainda não registada conta como 0, ou seja o regime mais
+// estrito: sem saber quais as linhas históricas, todas as linhas têm de
+// trazer reserva. Falhar para o lado de não libertar nada é preferível a
+// libertar reservas reais.
+function marcaDe_(io) {
+  if (!io.marcaSubmissoes) return 0;
+  var n = Number(io.marcaSubmissoes());
+  return isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+// Ponto de entrada único da reconciliação, partilhado pelo POST e pelo GET.
+// Ter os dois caminhos a chamar isto é deliberado: as guardas não podem
+// divergir, senão fechar um buraco num deles deixa-o aberto no outro.
+// Devolve quantas linhas expirou.
+function reconciliar_(io) {
+  var submissoes = io.lerSubmissoes();
+  if (!submissoes || !submissoes.length) return 0;
+
+  var idx = colunaReserva_(submissoes);
+  // -1 = não sabemos ler a coluna. Reconciliar às cegas libertaria reservas
+  // reais e reabriria lugares. Preferimos recusar.
+  if (idx < 0) return 0;
+  if (!submissoesFiaveis_(submissoes, idx, marcaDe_(io))) return 0;
+
+  var plano = planoReconciliacao_(
+    io.lerReservas(), contarSubmissoes_(submissoes, idx), io.agora(), JANELA_ORFAS_MS
+  );
+  if (!plano.length) return 0;
+
+  io.expirar(plano);
+  return plano.length;
+}
+
 // ===============================
 // SEMEADURA A PARTIR DAS SUBMISSÕES
 // ===============================
@@ -321,12 +392,21 @@ function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
 // Núcleo da semeadura, com a E/S injetada para ser testável em Node.
 function semear_(io) {
   var submissoes = io.lerSubmissoes();
-  if (!submissoes || !submissoes.length) return { semeadas: 0 };
+  // Sem aba de submissões não há nada a semear e nada a marcar: a marca
+  // fica por registar, o que é o regime estrito (ver marcaDe_).
+  if (!submissoes || !submissoes.length) return { semeadas: 0, marca: 0 };
 
   var hoje = normalizarData_(new Date(io.agora()));
   var plano = planoSemeadura_(submissoes, io.lerReservas(), hoje, io.agora());
   for (var i = 0; i < plano.length; i++) io.acrescentar(plano[i]);
-  return { semeadas: plano.length };
+
+  // A marca de água: daqui para a frente, toda a linha nova tem de trazer
+  // uma reserva legível, senão a reconciliação para (ver
+  // submissoesFiaveis_). Correr semear() outra vez volta a marcar, e é
+  // esse o remédio se o espelho estiver partido e já se ter corrigido.
+  if (io.gravarMarca) io.gravarMarca(submissoes.length);
+
+  return { semeadas: plano.length, marca: submissoes.length };
 }
 
 // Corre a partir do editor. O preparar() já a chama; fica separadamente
@@ -374,21 +454,9 @@ function reservar_(pedido, io) {
   if (!livre) {
     // Só aqui vale a pena ler a Form responses: é a única situação em que
     // reconciliar pode mudar a resposta. Mantém o caminho normal rápido.
-    var submissoes = io.lerSubmissoes();
-    if (submissoes && submissoes.length) {
-      var idx = colunaReserva_(submissoes);
-      // -1 = não sabemos ler a coluna. Reconciliar às cegas libertaria
-      // reservas reais e reabriria lugares. Preferimos recusar.
-      if (idx >= 0) {
-        var plano = planoReconciliacao_(
-          linhas, contarSubmissoes_(submissoes, idx), io.agora(), JANELA_ORFAS_MS
-        );
-        if (plano.length) {
-          io.expirar(plano);
-          linhas = io.lerReservas();
-          livre = activos_(linhas, data, horario) < limite;
-        }
-      }
+    if (reconciliar_(io)) {
+      linhas = io.lerReservas();
+      livre = activos_(linhas, data, horario) < limite;
     }
   }
 
@@ -454,6 +522,12 @@ function ioReal_() {
       }
       SpreadsheetApp.flush();
     },
+    marcaSubmissoes: function () {
+      return PropertiesService.getScriptProperties().getProperty(CHAVE_MARCA);
+    },
+    gravarMarca: function (n) {
+      PropertiesService.getScriptProperties().setProperty(CHAVE_MARCA, String(n));
+    },
     agora: function () { return Date.now(); }
   };
 }
@@ -484,17 +558,7 @@ function doGet(e) {
   var lock = LockService.getScriptLock();
   if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
     try {
-      var submissoes = io.lerSubmissoes();
-      if (submissoes && submissoes.length) {
-        var idx = colunaReserva_(submissoes);
-        if (idx >= 0) {
-          var plano = planoReconciliacao_(
-            io.lerReservas(), contarSubmissoes_(submissoes, idx),
-            io.agora(), JANELA_ORFAS_MS
-          );
-          if (plano.length) io.expirar(plano);
-        }
-      }
+      reconciliar_(io);
     } catch (err) {
       // Reconciliar é oportunista: falhar aqui não deve impedir o GET.
     } finally {
@@ -602,6 +666,9 @@ if (typeof module !== "undefined") {
     colunaReserva_: colunaReserva_,
     contarSubmissoes_: contarSubmissoes_,
     planoReconciliacao_: planoReconciliacao_,
+    submissoesFiaveis_: submissoesFiaveis_,
+    marcaDe_: marcaDe_,
+    reconciliar_: reconciliar_,
     tokenSemeado_: tokenSemeado_,
     tokenExiste_: tokenExiste_,
     planoSemeadura_: planoSemeadura_,

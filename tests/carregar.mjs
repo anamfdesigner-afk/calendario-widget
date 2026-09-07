@@ -8,7 +8,9 @@ import { readFileSync } from "node:fs";
 // sombreados dentro do script e podem ser esboçados nos testes.
 export function carregarGs(caminho, stubs = {}) {
   const mod = { exports: {} };
-  const nomes = ["SpreadsheetApp", "LockService", "Utilities", "ContentService"];
+  const nomes = [
+    "SpreadsheetApp", "LockService", "Utilities", "ContentService", "PropertiesService"
+  ];
   const fn = new Function("module", ...nomes, readFileSync(caminho, "utf8"));
   fn(mod, ...nomes.map(n => stubs[n]));
   return mod.exports;

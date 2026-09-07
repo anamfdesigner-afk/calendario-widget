@@ -402,6 +402,93 @@ test("reservar_ propaga os erros de validação", () => {
 });
 
 // ===============================
+// FIABILIDADE DAS SUBMISSÕES (MARCA DE ÁGUA)
+// ===============================
+// A guarda do colunaReserva_ é ao nível da COLUNA: basta uma linha com
+// valor certo. A premissa de que a reconciliação precisa é por LINHA: toda
+// a reserva genuína tem submissão correspondente. Quando o espelho do
+// JotForm deixa de escrever (um rótulo trocado é indistinguível de sucesso
+// — já aconteceu neste repositório), as linhas históricas válidas mantêm o
+// colunaReserva_ satisfeito, cada reserva nova parece órfã, e 20 minutos
+// depois de cada reserva o lugar é libertado e revendido, em silêncio.
+//
+// A marca de água é a contagem de linhas da Form responses no momento da
+// instalação. Linhas ANTES dela estão isentas (a folha tem ~49 linhas
+// históricas cujo `Reserva` nunca foi escrito, e essas não podem bloquear
+// a reconciliação para sempre). Linhas DEPOIS dela têm de ter todas uma
+// reserva legível — o widget tem OBRIGATORIO = true, logo uma submissão
+// nova sem reserva significa que o espelho está partido.
+
+const SUBS_ESPELHO_PARTIDO = [
+  ["Submission Date", "Email", "Reserva"],
+  ["2026-09-01", "a@b.pt", "2026-09-08 | 08:45-09:30"],
+  ["2026-09-02", "c@d.pt", ""]
+];
+
+test("submissoesFiaveis_ recusa uma linha em branco depois da marca de água", () => {
+  // Marca 1 = na instalação a aba só tinha o cabeçalho; ambas as linhas são
+  // novas, e a segunda não trouxe reserva.
+  assert.equal(gs.submissoesFiaveis_(SUBS_ESPELHO_PARTIDO, 2, 1), false);
+});
+
+test("submissoesFiaveis_ isenta as linhas históricas anteriores à marca", () => {
+  // Marca 3 = as duas linhas de dados já lá estavam na instalação.
+  assert.equal(gs.submissoesFiaveis_(SUBS_ESPELHO_PARTIDO, 2, 3), true);
+});
+
+test("submissoesFiaveis_ aceita quando todas as linhas novas têm reserva", () => {
+  const linhas = [
+    ["Submission Date", "Email", "Reserva"],
+    ["2026-09-01", "a@b.pt", ""],                          // histórica
+    ["2026-09-02", "c@d.pt", "2026-09-08 | 08:45-09:30"]   // nova, completa
+  ];
+  assert.equal(gs.submissoesFiaveis_(linhas, 2, 2), true);
+  assert.equal(gs.submissoesFiaveis_(linhas, -1, 0), false, "sem coluna não há provas");
+});
+
+test("um espelho partido não liberta nem revende reservas genuínas", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes: SUBS_ESPELHO_PARTIDO, marca: 1 }
+  );
+  // Capacidade 2, duas reservas genuínas. Uma das submissões perdeu o
+  // valor: sem a marca de água a reconciliação via excedente 1, expirava a
+  // x1 e admitia este terceiro hóspede.
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
+  assert.deepEqual(estado.expiradas, [], "nenhuma reserva genuína pode ser revogada");
+  assert.equal(estado.reservas[1][4], "activo");
+});
+
+test("as linhas históricas em branco continuam a permitir reconciliar órfãs", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    // Marca 3: as duas linhas já existiam antes da instalação, logo a linha
+    // em branco é histórica e não é prova de espelho partido.
+    { submissoes: SUBS_ESPELHO_PARTIDO, marca: 3 }
+  );
+  const r = gs.reservar_(PEDIDO, io);
+  assert.equal(r.reservado, true, "uma folha com histórico não pode travar a reconciliação");
+  assert.deepEqual(estado.expiradas, [1]);
+});
+
+test("semear_ grava a marca de água com a contagem de linhas das submissões", () => {
+  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
+  gs.semear_(io);
+  assert.equal(estado.marca, SUBMISSOES_TRES.length);
+});
+
+// ===============================
 // SEMEADURA DAS RESERVAS JÁ EXISTENTES
 // ===============================
 // Na instalação a aba Reservas está vazia, mas a Form responses já tem
