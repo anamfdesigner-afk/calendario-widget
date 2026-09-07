@@ -866,6 +866,121 @@ function tituloDaColuna_(linhas, indice) {
   return String(((linhas || [])[0] || [])[indice] || "").trim();
 }
 
+// Um `submissionID` como TEXTO, para as duas tabelas se compararem pela mesma
+// régua.
+//
+// Um id tem 19 dígitos, o que passa a precisão de um double. Se uma célula
+// vier como NÚMERO, o valor já foi arredondado DENTRO do Sheets antes de nós o
+// vermos e não há como recuperar os dígitos perdidos. O que se pode é não
+// perder mais nenhum: o String() de um double grande devolve a forma mais
+// curta que volta ao mesmo número (6437228876324828909 sai
+// "6437228876324829000", com o fim truncado a zeros), enquanto o toFixed(0)
+// devolve o inteiro exacto do double — em decimal, e nunca em notação
+// científica.
+//
+// Um id numérico que por isso não case com um id em texto não escreve NADA, e
+// essa é a direcção segura: escrever à mesma seria pôr a reserva de um hóspede
+// na linha de outro. É também por isso que o preparar() põe a coluna
+// `submissao` da aba Reservas em texto simples.
+function normalizarId_(v) {
+  if (typeof v === "number") {
+    if (!isFinite(v)) return "";
+    return v.toFixed(0);
+  }
+  var t = String(v == null ? "" : v).trim();
+  // Uma célula que o Sheets tenha formatado pode chegar em notação científica
+  // ("6.4372288763248E+18"). Comparada assim não casaria com nada.
+  if (/^\d+(?:\.\d+)?[eE]\+?\d+$/.test(t)) return Number(t).toFixed(0);
+  return t;
+}
+
+// Há alguma reserva com submissão guardada? Serve para o espelho não ir ler a
+// aba das respostas — nem escrever no registo — numa instalação onde ainda não
+// há nada para espelhar.
+function temSubmissaoGuardada_(reservas) {
+  for (var i = 1; i < (reservas || []).length; i++) {
+    if (normalizarId_((reservas[i] || [])[COL_SUBMISSAO])) return true;
+  }
+  return false;
+}
+
+// O que escrever, e onde. Função pura: recebe as duas folhas já lidas e os
+// índices (0-based) das duas colunas, e devolve as células a preencher.
+//
+// Preenche-se SÓ o que está por preencher, e só onde o id casa EXACTAMENTE com
+// o de uma linha do registo. São as duas condições juntas que tornam isto
+// idempotente e seguro: correr mil vezes escreve uma só, e uma linha sem
+// correspondência fica exactamente como estava. Nunca se inventa um valor a
+// partir da data ou do horário — isso casaria a reserva de um hóspede com a
+// submissão de outro no mesmo slot.
+//
+// A `linha` e a `coluna` saem daqui já em coordenadas 1-based da folha, que é
+// o que o getRange quer. A aritmética 0-based→1-based fica TODA dentro desta
+// função pura, coberta por testes, em vez de espalhada pelo io: um deslize de
+// um escreve a reserva por cima da resposta de um hóspede.
+function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
+  var plano = [];
+  if (idxId < 0 || idxDestino < 0) return plano;
+
+  var porId = {};
+  for (var r = 1; r < (reservas || []).length; r++) {
+    var linhaR = reservas[r] || [];
+    var id = normalizarId_(linhaR[COL_SUBMISSAO]);
+    if (!id) continue;
+    // Um submissionID confirma no máximo UMA linha (ver o anel do
+    // confirmarWebhook_), logo a primeira que se encontra é a única.
+    if (Object.prototype.hasOwnProperty.call(porId, id)) continue;
+    porId[id] = normalizarData_(linhaR[COL_DATA]) + " | " +
+      String(linhaR[COL_HORARIO] == null ? "" : linhaR[COL_HORARIO]).trim();
+  }
+
+  for (var i = 1; i < (submissoes || []).length; i++) {
+    var l = submissoes[i] || [];
+    // Só células VAZIAS. É esta guarda que impede o espelho de escrever por
+    // cima de seja o que for — inclusive de uma correcção feita à mão.
+    if (String(l[idxDestino] == null ? "" : l[idxDestino]).trim()) continue;
+
+    var chave = normalizarId_(l[idxId]);
+    if (!chave) continue;
+    if (!Object.prototype.hasOwnProperty.call(porId, chave)) continue;
+
+    plano.push({ linha: i + 1, coluna: idxDestino + 1, valor: porId[chave] });
+  }
+  return plano;
+}
+
+// Ponto de entrada único do espelho, partilhado pelo webhook e pelo GET — pela
+// mesma razão do reconciliar_: duas cópias das guardas acabam por divergir, e
+// fechar um buraco numa delas deixa-o aberto na outra. Devolve quantas células
+// escreveu.
+function espelharRespostas_(io, reservas) {
+  if (!io.lerRespostas || !io.escreverRespostas) return 0;
+
+  var linhas = reservas || io.lerReservas();
+  if (!temSubmissaoGuardada_(linhas)) return 0;
+
+  var submissoes = io.lerRespostas();
+  var idxId = colunaSubmissao_(submissoes);
+  var idxDestino = colunaDestino_(submissoes);
+  if (idxId < 0 || idxDestino < 0) {
+    // Há reservas para espelhar e não há onde as pôr. Dizer porquê é o
+    // essencial: o espelho anterior deste projeto esteve partido durante meses
+    // exactamente porque falhava sem deixar rasto nenhum.
+    console.log("Espelho desligado: na aba \"" + ABA_RESPOSTAS + "\" falta a " +
+      "coluna do " + (idxId < 0 ? "id da submissão (cabeçalho tipo " +
+      "\"Submission ID\")" : "destino (cabeçalho tipo \"typeA137\")") +
+      ". A reserva não aparece ao lado do menu; as reservas e os lugares não " +
+      "são afectados. Corra o preparar() para ver as duas colunas.");
+    return 0;
+  }
+
+  var plano = planoRespostas_(submissoes, linhas, idxId, idxDestino);
+  if (!plano.length) return 0;
+
+  io.escreverRespostas(plano);
+  return plano.length;
+}
+
 // ===============================
 // NÚCLEO DA RESERVA
 // ===============================
@@ -961,6 +1076,21 @@ function ioReal_() {
     // do JotForm ainda por ligar). Aí devolve [] e o espelho fica desligado
     // — sem coluna nenhuma, não há onde escrever.
     lerRespostas: function () { return lerTudo_(ABA_RESPOSTAS) || []; },
+    escreverRespostas: function (plano) {
+      // `false`: se a aba não existir, NÃO se cria. Uma aba nossa com este
+      // nome faria a integração do JotForm criar outra ao lado, e o dono
+      // ficava com duas abas de respostas e nenhuma completa.
+      var aba = folha_(ABA_RESPOSTAS, false);
+      if (!aba) return;
+      for (var i = 0; i < plano.length; i++) {
+        // Célula a célula, com as coordenadas que o planoRespostas_ já
+        // calculou. Nunca insertRow, deleteRow, insertColumn nem um setValues
+        // sobre um intervalo: esta aba é da integração do JotForm e a única
+        // coisa que aqui fazemos é preencher células vazias de uma coluna.
+        aba.getRange(plano[i].linha, plano[i].coluna).setValue(plano[i].valor);
+      }
+      SpreadsheetApp.flush();
+    },
     acrescentar: function (linha) {
       var aba = folha_(ABA_RESERVAS, true);
       // Espelha a guarda de lerReservas: uma aba nova ou esvaziada não tem
@@ -1063,6 +1193,27 @@ function doGet(e) {
     }
   }
 
+  // O espelho na aba das respostas, em regime best-effort. Corre em TODOS os
+  // GET e NÃO só quando algum slot parece cheio: uma reserva só se pode
+  // espelhar depois de a linha da submissão existir na aba das respostas, e
+  // essa linha é escrita pela integração do Sheets, que é independente do
+  // webhook. Preso ao caminho do slot cheio, a esmagadora maioria das reservas
+  // nunca chegava a aparecer ao lado do menu — que é a razão de existir disto.
+  //
+  // Custa uma leitura da aba das respostas, e só quando já há alguma reserva
+  // com submissão guardada (ver temSubmissaoGuardada_). NÃO pega no lock: a
+  // escrita é sempre o mesmo valor na mesma célula, numa coluna que mais
+  // ninguém escreve, logo dois GET em simultâneo não se estorvam. Pegar no
+  // lock a cada GET era roubá-lo ao caminho da reserva, que só o espera 3,5 s
+  // e falha fechado quando não o consegue.
+  try {
+    espelharRespostas_(io, linhas);
+  } catch (errEspelho) {
+    // Como na reconciliação: falhar aqui não pode impedir o GET, mas engolir
+    // o erro escondia um espelho que nunca funciona atrás de um GET perfeito.
+    console.log("Espelho na aba das respostas falhou (o GET segue): " + errEspelho);
+  }
+
   var slots = [];
   for (var i = 0; i < caps.length; i++) {
     var usadas = ocupados_(linhas, data, caps[i].horario);
@@ -1114,6 +1265,24 @@ function doPost(e) {
     }
     try {
       var r = confirmarWebhook_(params, ioWebhook);
+      // Dentro do MESMO lock, e só depois de haver mesmo uma linha confirmada.
+      // A linha desta submissão pode ainda não existir na aba das respostas —
+      // o webhook e a integração do Sheets são independentes e não têm ordem
+      // garantida entre si — e é por isso que o doGet volta a passar por aqui
+      // mais tarde: essas são apanhadas pouco depois.
+      if (r.ok && r.confirmado) {
+        try {
+          espelharRespostas_(ioWebhook);
+        } catch (errEspelho) {
+          // Espelhar é acessório: a reserva já está confirmada e o lugar
+          // protegido. Deixar este erro subir transformava uma confirmação boa
+          // num {ok:false}, a JotForm repetiria a entrega, e o anel
+          // anti-repetição já não a deixaria confirmar nada — uma reserva a
+          // valer perdida por causa de uma coluna de conveniência.
+          console.log("Espelho na aba das respostas falhou (a confirmação " +
+            "mantém-se): " + errEspelho);
+        }
+      }
       return resposta_(r.ok ? r : { ok: false });
     } catch (err) {
       console.log("Webhook falhou: " + err);
@@ -1360,6 +1529,9 @@ if (typeof module !== "undefined") {
     confirmarWebhook_: confirmarWebhook_,
     colunaSubmissao_: colunaSubmissao_,
     colunaDestino_: colunaDestino_,
+    normalizarId_: normalizarId_,
+    planoRespostas_: planoRespostas_,
+    espelharRespostas_: espelharRespostas_,
     reservar_: reservar_,
     preparar: preparar,
     doGet: doGet,

@@ -311,6 +311,10 @@ function ioFalso(reservas, opcoes = {}) {
     acrescentadas: [],
     expiradas: [],
     confirmadas: [],
+    // A aba das respostas, tal como a integração do JotForm a mantém: o
+    // cabeçalho na linha 1 e uma linha por submissão. Por omissão não existe.
+    respostas: (opcoes.respostas || []).map(l => l.slice()),
+    escritasRespostas: [],
     // Por omissão NUNCA chegou webhook nenhum: é o estado de uma instalação
     // nova, e é ele que trava a reconciliação.
     ultimoWebhook: opcoes.ultimoWebhook === undefined ? null : opcoes.ultimoWebhook,
@@ -343,6 +347,14 @@ function ioFalso(reservas, opcoes = {}) {
         estado.reservas[indice][5] = quarto;
         estado.reservas[indice][6] = nome;
         estado.reservas[indice][7] = submissao;
+      },
+      lerRespostas: () => estado.respostas,
+      escreverRespostas: plano => {
+        plano.forEach(p => {
+          estado.escritasRespostas.push([p.linha, p.coluna, p.valor]);
+          if (!estado.respostas[p.linha - 1]) estado.respostas[p.linha - 1] = [];
+          estado.respostas[p.linha - 1][p.coluna - 1] = p.valor;
+        });
       },
       segredo: () => estado.segredo,
       formIdEsperado: () => estado.formId,
@@ -1549,6 +1561,181 @@ test("sem coluna, as duas devolvem -1 em vez de adivinharem uma posição", () =
   assert.equal(gs.colunaSubmissao_([["", "", ""]]), -1, "cabeçalho em branco");
 });
 
+// Uma linha da aba das respostas com o formato real: 23 colunas, o destino em
+// D (índice 3) e o id em V (índice 21).
+function respostaFalsa(campos) {
+  const fila = [];
+  for (let i = 0; i < CAB_RESPOSTAS.length; i++) fila.push("");
+  fila[1] = campos.nome === undefined ? "" : campos.nome;
+  fila[3] = campos.destino === undefined ? "" : campos.destino;
+  fila[21] = campos.id === undefined ? "" : campos.id;
+  return fila;
+}
+
+function respostasFalsas(linhas) {
+  return [CAB_RESPOSTAS].concat(linhas.map(respostaFalsa));
+}
+
+// Um submissionID a valer: 19 dígitos, guardado como TEXTO. O segundo difere
+// do primeiro no ÚLTIMO dígito — o dígito que um double deita fora.
+const ID_ANA = "6437228876324828909";
+const ID_RUI = "6437228876324828910";
+
+const IDX_ID = 21;
+const IDX_DESTINO = 3;
+
+function reservasComSubmissao() {
+  return [
+    CAB,
+    ["t-ana", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA), "confirmado", "12", "Ana", ID_ANA],
+    ["t-rui", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA), "confirmado", "7", "Rui", ID_RUI]
+  ];
+}
+
+test("planoRespostas_ aponta para a linha e a coluna certas da folha (1-based)", () => {
+  // A aritmética 0-based→1-based vive toda aqui, e é a de maior consequência
+  // desta funcionalidade: um deslize de um escreve a reserva por cima da
+  // resposta de um hóspede.
+  const submissoes = respostasFalsas([
+    { nome: "Zé", id: "9999999999999999999" },
+    { nome: "Ana", id: ID_ANA }
+  ]);
+
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
+    [{ linha: 3, coluna: 4, valor: "2026-09-08 | 08:45-09:30" }]
+  );
+});
+
+test("planoRespostas_ não escreve numa linha cujo id não exista no registo", () => {
+  // Nunca se inventa um valor a partir da data ou do horário: isso casaria a
+  // reserva de um hóspede com a submissão de outro no mesmo slot.
+  const submissoes = respostasFalsas([{ id: "9999999999999999999" }, { id: "" }]);
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO), []);
+});
+
+test("planoRespostas_ preenche só células vazias", () => {
+  // É esta guarda que torna a coisa idempotente — e que impede o espelho de
+  // escrever por cima de uma correcção feita à mão.
+  const submissoes = respostasFalsas([
+    { id: ID_ANA, destino: "escrito à mão" },
+    { id: ID_RUI, destino: "   " }
+  ]);
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
+    [{ linha: 3, coluna: 4, valor: "2026-09-08 | 08:00-08:45" }],
+    "a de espaços em branco conta como vazia; a escrita fica intacta"
+  );
+});
+
+test("planoRespostas_ casa um id de 19 dígitos sem perder o último", () => {
+  // Se algum dos lados fosse coagido a double, os dois ids — que só diferem no
+  // último dígito — normalizariam para a MESMA string e a reserva da Ana
+  // aparecia na linha do Rui.
+  const submissoes = respostasFalsas([{ id: ID_RUI }]);
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
+    [{ linha: 2, coluna: 4, valor: "2026-09-08 | 08:00-08:45" }],
+    "a linha do Rui recebe a reserva do Rui"
+  );
+});
+
+test("normalizarId_ nunca devolve notação científica nem encurta o id", () => {
+  const numero = 6437228876324828909;
+
+  // O String() de um double grande devolve a forma mais CURTA que volta ao
+  // mesmo número — "…829000" — e deitava fora dígitos que ainda lá estavam.
+  assert.equal(gs.normalizarId_(numero), "6437228876324829184");
+  assert.notEqual(gs.normalizarId_(numero), String(numero));
+  assert.doesNotMatch(gs.normalizarId_(numero), /[eE+]/);
+  assert.equal(gs.normalizarId_(numero).length, 19);
+
+  // E uma célula que o Sheets tenha formatado em notação científica.
+  assert.doesNotMatch(gs.normalizarId_("6.4372288763248E+18"), /[eE+]/);
+
+  assert.equal(gs.normalizarId_("  " + ID_ANA + "  "), ID_ANA, "texto é texto");
+  assert.equal(gs.normalizarId_(null), "");
+  assert.equal(gs.normalizarId_(""), "");
+});
+
+test("planoRespostas_ casa o mesmo id quando as duas células vêm como número", () => {
+  // Um id de 19 dígitos num campo NUMÉRICO já perdeu precisão dentro do
+  // Sheets, antes de chegar aqui. O que se garante é que as duas pontas são
+  // lidas pela mesma régua: normalizadas em decimal, e nunca em notação
+  // científica, casam uma com a outra.
+  const numero = 6437228876324828909;
+  const reservas = [
+    CAB,
+    ["t-ana", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA), "confirmado", "12", "Ana", numero]
+  ];
+  const submissoes = respostasFalsas([{ id: numero }]);
+
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservas, IDX_ID, IDX_DESTINO),
+    [{ linha: 2, coluna: 4, valor: "2026-09-08 | 08:45-09:30" }]
+  );
+});
+
+test("planoRespostas_ com uma coluna em -1 não devolve plano nenhum", () => {
+  const submissoes = respostasFalsas([{ id: ID_ANA }]);
+  const reservas = reservasComSubmissao();
+  assert.deepEqual(gs.planoRespostas_(submissoes, reservas, -1, IDX_DESTINO), []);
+  assert.deepEqual(gs.planoRespostas_(submissoes, reservas, IDX_ID, -1), []);
+});
+
+test("espelharRespostas_ escreve uma vez e correr outra vez não escreve nada", () => {
+  const { io, estado } = ioFalso(reservasComSubmissao(), {
+    respostas: respostasFalsas([{ nome: "Ana", id: ID_ANA }, { nome: "Rui", id: ID_RUI }])
+  });
+
+  assert.equal(gs.espelharRespostas_(io), 2);
+  assert.deepEqual(estado.escritasRespostas, [
+    [2, 4, "2026-09-08 | 08:45-09:30"],
+    [3, 4, "2026-09-08 | 08:00-08:45"]
+  ]);
+
+  // Segunda passagem: as células já não estão vazias.
+  assert.equal(gs.espelharRespostas_(io), 0);
+  assert.equal(estado.escritasRespostas.length, 2);
+
+  // E as outras colunas ficaram exactamente como estavam.
+  assert.equal(estado.respostas[1][1], "Ana");
+  assert.equal(estado.respostas[1][IDX_ID], ID_ANA);
+  assert.equal(estado.respostas.length, 3, "nenhuma linha foi acrescentada");
+});
+
+test("sem as colunas, o espelho fica desligado e DIZ que ficou", () => {
+  // Uma funcionalidade que se desliga em silêncio é o espelho anterior deste
+  // projeto: esteve partido meses porque nada o reportava.
+  const { io, estado } = ioFalso(reservasComSubmissao(), {
+    respostas: [["Submission Date", "Nome", "Submission ID"], ["x", "Ana", ID_ANA]]
+  });
+
+  let escreveu;
+  const registo = comRegisto(() => { escreveu = gs.espelharRespostas_(io); });
+
+  assert.equal(escreveu, 0);
+  assert.deepEqual(estado.escritasRespostas, [], "nada é escrito sem coluna de destino");
+  assert.match(registo, /Espelho desligado/);
+  assert.match(registo, /typeA137/);
+  assert.match(registo, /as reservas e os lugares não são afectados/);
+});
+
+test("sem reservas por espelhar, nem se lê a aba das respostas", () => {
+  // Numa instalação nova não há nada para espelhar, e não vale a pena gastar
+  // uma leitura da folha — nem encher o registo de avisos — a cada GET.
+  let leituras = 0;
+  const { io } = ioFalso([CAB, ["t1", "2026-09-08", "08:45-09:30", "x", "activo", "", "", ""]]);
+  const original = io.lerRespostas;
+  io.lerRespostas = () => { leituras++; return original(); };
+
+  const registo = comRegisto(() => { assert.equal(gs.espelharRespostas_(io), 0); });
+
+  assert.equal(leituras, 0);
+  assert.equal(registo, "");
+});
+
 test("preparar() nomeia as duas colunas da aba das respostas", () => {
   const livro = livroFalso(
     { "Form responses": [CAB_RESPOSTAS] }, { propriedades: CONFIGURADO });
@@ -1641,6 +1828,55 @@ test("doGet não pega no lock quando nenhum slot da data parece cheio", () => {
     { horario: "08:00-08:45", capacidade: 3, restantes: 3 },
     { horario: "08:45-09:30", capacidade: 2, restantes: 2 }
   ]);
+});
+
+test("doGet espelha a reserva mesmo sem nenhum slot cheio, e sem pegar no lock", () => {
+  // O webhook e a integração do Sheets são independentes: quando o webhook
+  // chega, a linha da submissão pode ainda não existir na aba das respostas.
+  // É esta passagem que a apanha pouco depois — e por isso NÃO pode estar
+  // presa ao caminho do slot cheio, ou a esmagadora maioria das reservas nunca
+  // chegava a aparecer ao lado do menu.
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000),
+        "confirmado", "12", "Ana", SUBMISSAO]
+    ],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": [CAB_RESPOSTAS, respostaFalsa({ nome: "Ana", id: SUBMISSAO })]
+  }, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+
+  assert.equal(livro.folhas["Form responses"].dados[1][3], "2099-01-01 | 08:45-09:30");
+  // Sem lock: a escrita é sempre o mesmo valor na mesma célula, numa coluna
+  // que mais ninguém escreve. Pegar no lock a cada GET era roubá-lo ao caminho
+  // da reserva, que só o espera 3,5 s e falha fechado quando não o consegue.
+  assert.deepEqual(livro.chamadas.tryLock, []);
+  assert.equal(r.slots[1].restantes, 1, "e as contagens saem na mesma");
+});
+
+test("doGet registra a falha do espelho e ainda devolve as contagens", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000),
+        "confirmado", "12", "Ana", SUBMISSAO]
+    ],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": [CAB_RESPOSTAS, respostaFalsa({ id: SUBMISSAO })]
+  }, { propriedades: CONFIGURADO, escritaExplosiva: "Form responses" });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => {
+    r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+  });
+
+  assert.equal(r.ok, true);
+  assert.equal(r.slots[1].restantes, 1);
+  assert.match(registo, /Espelho na aba das respostas falhou \(o GET segue\)/);
 });
 
 test("doGet reconcilia quando um slot parece cheio, e liberta o lugar órfão", () => {
@@ -1912,11 +2148,73 @@ test("doPost encaminha um webhook da JotForm e confirma a linha, dentro do lock"
   assert.equal(linha[4], "confirmado");
   assert.equal(linha[5], "12");
   assert.equal(linha[6], "Ana Silva");
+  assert.equal(linha[7], SUBMISSAO, "a chave que liga esta reserva à aba das respostas");
   // O mesmo mutex da reserva, com a espera do webhook, e sempre largado.
   assert.deepEqual(livro.chamadas.tryLock, [10000]);
   assert.equal(livro.chamadas.releaseLock, 1);
   // E a marca fica nas propriedades do script: é ela que arma a reconciliação.
   assert.match(livro.propriedades.ultimoWebhook, ISO_UTC);
+});
+
+test("uma confirmação espelha a reserva na aba das respostas, dentro do mesmo lock", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": [
+      CAB_RESPOSTAS,
+      respostaFalsa({ nome: "Zé", id: "9999999999999999999" }),
+      respostaFalsa({ nome: "Ana Silva", id: SUBMISSAO })
+    ]
+  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doPost({
+    parameter: webhook({ rawRequest: raw("2099-01-01 | 08:45-09:30") }),
+    postData: { type: "application/x-www-form-urlencoded", contents: "formID=" + FORM_ID }
+  }));
+
+  assert.deepEqual(r, { ok: true, confirmado: true });
+  const respostas = livro.folhas["Form responses"].dados;
+  assert.equal(respostas[2][3], "2099-01-01 | 08:45-09:30", "a linha da Ana, coluna D");
+  assert.equal(respostas[1][3], "", "a linha sem reserva correspondente fica vazia");
+  assert.equal(respostas.length, 3, "nenhuma linha é acrescentada nem apagada");
+  // Tudo dentro do mutex que o webhook já tinha tomado — não se pega noutro.
+  assert.deepEqual(livro.chamadas.tryLock, [10000]);
+  assert.equal(livro.chamadas.releaseLock, 1);
+});
+
+test("um espelho que estoira não transforma uma confirmação boa numa recusa", () => {
+  // Se este erro subisse, a resposta era {ok:false}, a JotForm repetia a
+  // entrega e o anel anti-repetição já não a deixava confirmar nada: uma
+  // reserva a valer perdida por causa de uma coluna de conveniência.
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": [CAB_RESPOSTAS, respostaFalsa({ id: SUBMISSAO })]
+  }, {
+    propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID },
+    escritaExplosiva: "Form responses"
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => {
+    r = corpo(gsComStub.doPost({
+      parameter: webhook({ rawRequest: raw("2099-01-01 | 08:45-09:30") }),
+      postData: { type: "application/x-www-form-urlencoded", contents: "formID=" + FORM_ID }
+    }));
+  });
+
+  assert.deepEqual(r, { ok: true, confirmado: true });
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "confirmado");
+  assert.match(registo, /Espelho na aba das respostas falhou/);
+  assert.equal(livro.chamadas.releaseLock, 1);
 });
 
 test("doPost recusa um webhook com o segredo errado sem tocar na folha", () => {
@@ -2226,6 +2524,57 @@ test("ioReal_.confirmar grava vazio quando o webhook não trouxe submissionID", 
   gsComStub.ioReal_().confirmar(1, "12", "Ana Silva");
 
   assert.deepEqual(escritas[3], [2, 8, ""]);
+});
+
+test("ioReal_.escreverRespostas escreve célula a célula e não mexe em mais nada", () => {
+  // A aba das respostas é da integração do JotForm. A única coisa que aqui
+  // fazemos é preencher células vazias de UMA coluna: nunca inserir nem apagar
+  // linhas ou colunas, nunca escrever noutra coluna.
+  const chamadas = { getRange: [], escritas: [] };
+  const proibido = nome => () => { throw new Error("escreverRespostas chamou " + nome); };
+  const folhaFalsa = {
+    getRange: (linha, coluna) => {
+      chamadas.getRange.push([linha, coluna]);
+      return { setValue: v => { chamadas.escritas.push(v); } };
+    },
+    appendRow: proibido("appendRow"),
+    deleteRow: proibido("deleteRow"),
+    insertRows: proibido("insertRows"),
+    insertColumns: proibido("insertColumns")
+  };
+  const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: proibido("insertSheet") };
+  let flushes = 0;
+  const gsComStub = carregarGs(CAMINHO_GS, {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => { flushes++; } }
+  });
+
+  gsComStub.ioReal_().escreverRespostas([
+    { linha: 3, coluna: 4, valor: "2026-09-08 | 08:45-09:30" },
+    { linha: 9, coluna: 4, valor: "2026-09-09 | 08:00-08:45" }
+  ]);
+
+  // As coordenadas vêm do plano tal como estão: o io não faz aritmética
+  // nenhuma, e por isso não pode enganar-se num índice.
+  assert.deepEqual(chamadas.getRange, [[3, 4], [9, 4]]);
+  assert.deepEqual(chamadas.escritas,
+    ["2026-09-08 | 08:45-09:30", "2026-09-09 | 08:00-08:45"]);
+  assert.equal(flushes, 1);
+});
+
+test("ioReal_.escreverRespostas não cria a aba das respostas quando ela não existe", () => {
+  // Uma aba nossa com este nome faria a integração do JotForm criar outra ao
+  // lado, e o dono ficava com duas abas de respostas e nenhuma completa.
+  const ssFalso = {
+    getSheetByName: () => null,
+    insertSheet: () => { throw new Error("não se cria a aba das respostas"); }
+  };
+  let flushes = 0;
+  const gsComStub = carregarGs(CAMINHO_GS, {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => { flushes++; } }
+  });
+
+  gsComStub.ioReal_().escreverRespostas([{ linha: 3, coluna: 4, valor: "x" }]);
+  assert.equal(flushes, 0);
 });
 
 test("ioReal_ lê o segredo e o formulário das propriedades do script", () => {
