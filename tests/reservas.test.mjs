@@ -171,7 +171,9 @@ test("maisAntigaActiva_ não ignora uma linha sem timestamp legível", () => {
 
 test("validarPedido_ rejeita cada campo inválido com o seu código", () => {
   const bom = { token: "abcd-1234-efgh", data: "2026-09-08", horario: "08:00-08:45" };
-  assert.deepEqual(gs.validarPedido_(bom, CAPS, "2026-09-07"), { ok: true });
+  assert.deepEqual(gs.validarPedido_(bom, CAPS, "2026-09-07"), {
+    ok: true, token: "abcd-1234-efgh", data: "2026-09-08", horario: "08:00-08:45"
+  });
 
   assert.equal(gs.validarPedido_({ ...bom, token: "curto" }, CAPS, "2026-09-07").erro, "token_invalido");
   assert.equal(gs.validarPedido_({ ...bom, token: "tem espaços aqui" }, CAPS, "2026-09-07").erro, "token_invalido");
@@ -182,7 +184,21 @@ test("validarPedido_ rejeita cada campo inválido com o seu código", () => {
 
 test("validarPedido_ aceita hoje", () => {
   const hoje = { token: "abcd-1234-efgh", data: "2026-09-07", horario: "08:00-08:45" };
-  assert.deepEqual(gs.validarPedido_(hoje, CAPS, "2026-09-07"), { ok: true });
+  assert.deepEqual(gs.validarPedido_(hoje, CAPS, "2026-09-07"), {
+    ok: true, token: "abcd-1234-efgh", data: "2026-09-07", horario: "08:00-08:45"
+  });
+});
+
+test("validarPedido_ devolve os valores normalizados, não os do pedido", () => {
+  // É por estes que o reservar_ conta e escreve. Um array stringifica num
+  // valor que passa a validação mas compara `!==` diferente de todas as
+  // strings guardadas — e então o slot parecia sempre livre.
+  const emArray = {
+    token: ["abcd-1234-efgh"], data: ["2026-09-08"], horario: ["08:00-08:45"]
+  };
+  assert.deepEqual(gs.validarPedido_(emArray, CAPS, "2026-09-07"), {
+    ok: true, token: "abcd-1234-efgh", data: "2026-09-08", horario: "08:00-08:45"
+  });
 });
 
 const JANELA = 20 * 60 * 1000;
@@ -338,6 +354,54 @@ test("reservar_ recusa quando o slot está cheio", () => {
   const r = gs.reservar_(PEDIDO, io);
   assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
   assert.equal(estado.acrescentadas.length, 0);
+});
+
+test("reservar_ recusa um slot cheio mesmo com a data, o horário ou o token em array", () => {
+  // O Apps Script desdobra `data=x&data=y` num array, e um POST JSON pode
+  // trazer o que quiser. A validação testava String(pedido.data) e o
+  // reservar_ usava pedido.data em bruto: o array passava a validação e
+  // comparava diferente de todas as strings guardadas, o ocupados_ contava
+  // ZERO e a capacidade ficava sem efeito. Num slot de dois lugares já cheio,
+  // a string recusava e o array reservava.
+  const cheio = () => [
+    CAB,
+    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo", "", ""],
+    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "confirmado", "12", "Ana"]
+  ];
+  const recusa = { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
+
+  const comData = ioFalso(cheio());
+  assert.deepEqual(gs.reservar_({ ...PEDIDO, data: ["2026-09-08"] }, comData.io), recusa);
+  assert.equal(comData.estado.acrescentadas.length, 0);
+
+  const comHorario = ioFalso(cheio());
+  assert.deepEqual(gs.reservar_({ ...PEDIDO, horario: ["08:45-09:30"] }, comHorario.io), recusa);
+  assert.equal(comHorario.estado.acrescentadas.length, 0);
+});
+
+test("reservar_ continua idempotente com o token em array", () => {
+  // Sem normalizar, o linhaDoToken_ não encontrava a linha do próprio
+  // hóspede e ele ficava com dois lugares no mesmo horário.
+  const { io, estado } = ioFalso([
+    CAB,
+    [PEDIDO.token, "2026-09-08", "08:45-09:30", new Date(AGORA), "activo", "", ""]
+  ]);
+  const r = gs.reservar_({ ...PEDIDO, token: [PEDIDO.token] }, io);
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "repetido" });
+  assert.equal(estado.acrescentadas.length, 0, "dois lugares para um hóspede");
+});
+
+test("reservar_ escreve na folha as strings normalizadas, nunca o array", () => {
+  // Uma célula com um array dentro é uma linha ilegível, e uma linha ilegível
+  // é um lugar vendido que deixa de contar para a ocupação.
+  const { io, estado } = ioFalso([CAB]);
+  gs.reservar_({ token: ["abcd-1234-efgh"], data: ["2026-09-08"], horario: ["08:45-09:30"] }, io);
+  const linha = estado.acrescentadas[0];
+  assert.equal(typeof linha[0], "string");
+  assert.equal(typeof linha[1], "string");
+  assert.equal(typeof linha[2], "string");
+  assert.deepEqual(linha.slice(0, 3), ["abcd-1234-efgh", "2026-09-08", "08:45-09:30"]);
+  assert.equal(gs.ocupados_(estado.reservas, "2026-09-08", "08:45-09:30"), 1);
 });
 
 test("reservar_ troca de slot sem perder o lugar antigo antes de garantir o novo", () => {

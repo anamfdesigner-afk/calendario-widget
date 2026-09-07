@@ -272,6 +272,19 @@ function maisAntigaActiva_(linhas, data, horario) {
 // ===============================
 // VALIDAÇÃO (função pura)
 // ===============================
+// Devolve os valores JÁ NORMALIZADOS (token, data, horario), e é com ESSES que
+// o reservar_ conta e escreve.
+//
+// Devolvê-los não é comodidade: era a validação a testar `String(pedido.data)`
+// e o reservar_ a usar `pedido.data` em bruto. Um `data` que chegasse como
+// ARRAY (o Apps Script desdobra `data=x&data=y` num array, e um POST JSON pode
+// trazer o que quiser) passava a validação — `String(["2026-09-08"])` dá
+// "2026-09-08" — e depois comparava `!==` diferente de todas as strings
+// guardadas: o ocupados_ contava ZERO, o slot parecia livre e a capacidade
+// ficava sem efeito nenhum. Verificado num slot de um lugar já cheio: com a
+// string recusava, com o array reservava. O `token` tinha o mesmo buraco, e
+// com ele a idempotência: a linha do próprio hóspede não era encontrada e
+// ficava com dois lugares.
 function validarPedido_(pedido, caps, hoje) {
   var token = String((pedido && pedido.token) || "");
   var data = String((pedido && pedido.data) || "");
@@ -282,7 +295,7 @@ function validarPedido_(pedido, caps, hoje) {
   // Comparação de strings basta: em ISO a ordem lexicográfica é cronológica.
   if (data < hoje) return { ok: false, erro: "data_passada" };
   if (capacidadeDe_(caps, horario) < 0) return { ok: false, erro: "horario_desconhecido" };
-  return { ok: true };
+  return { ok: true, token: token, data: data, horario: horario };
 }
 
 // ===============================
@@ -591,12 +604,15 @@ function reservar_(pedido, io) {
   var v = validarPedido_(pedido, caps, hoje);
   if (!v.ok) return v;
 
-  var data = pedido.data;
-  var horario = pedido.horario;
+  // Daqui para baixo NADA vem do `pedido` em bruto: só os valores
+  // normalizados pelo validarPedido_. Ver o comentário dele.
+  var token = v.token;
+  var data = v.data;
+  var horario = v.horario;
   var limite = capacidadeDe_(caps, horario);
 
   var linhas = io.lerReservas();
-  var existente = linhaDoToken_(linhas, pedido.token);
+  var existente = linhaDoToken_(linhas, token);
 
   if (existente && existente.data === data && existente.horario === horario) {
     return { ok: true, reservado: true, estado: "repetido" };
@@ -617,7 +633,7 @@ function reservar_(pedido, io) {
 
   if (existente) io.expirar([existente.indice]);
   io.acrescentar([
-    pedido.token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO, "", ""
+    token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO, "", ""
   ]);
 
   return { ok: true, reservado: true, estado: existente ? "trocado" : "novo" };
