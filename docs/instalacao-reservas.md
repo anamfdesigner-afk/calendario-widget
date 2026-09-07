@@ -255,6 +255,10 @@ Se alterar o próprio programa, tem de fazer **Implementar → Gerir
 implementações → (lápis) → Versão: Nova versão → Implementar**. O URL
 mantém-se.
 
+Faça-o sempre assim, e **nunca** por "Nova implementação": essa dá um URL
+diferente, e o URL antigo está escrito dentro do formulário — a partir daí o
+formulário deixaria de aceitar reservas. Se acontecer, avise-me.
+
 Mais uma coisa, se um dia lhe enviar uma versão nova: se essa versão usar um
 serviço da Google que a atual não usa (enviar emails, por exemplo), a
 autorização que deu na instalação já não chega. Nesse caso **corra uma vez

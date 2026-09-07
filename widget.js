@@ -1,42 +1,22 @@
 // ===============================
 // CONFIGURAÇÃO
 // ===============================
-// ATENÇÃO: este URL ainda aponta para a folha ANTIGA (colunas
-// data/horario). Depois de apontar o projeto Sheety à folha das
-// submissões do JotForm ("Breakfast at Montecarmo12" / aba
-// "Form responses"), substituir este URL pelo novo endpoint do
-// Sheety. Enquanto isso não acontecer, o widget continua a contar
-// vagas na folha antiga e as reservas novas não descontam vagas.
-const SHEETY_GET_URL =
-  "https://api.sheety.co/1ae6091d965454adf0c80bb4437fd2cc/boCalendarioMotecarmo12/folha1";
-
-// Nome da folha tal como o Sheety a devolve no JSON do GET.
-// Se não existir, usamos automaticamente a primeira coleção que vier
-// na resposta — assim mudar de folha não parte a contagem.
-const SHEETY_COLLECTION = "folha1";
-
-// Nomes das colunas (camelCase) tal como o Sheety as devolve.
+// Web App do Apps Script ligado à folha das respostas (ver reservas.gs e
+// docs/instalacao-reservas.md). É ele que conta as vagas e que toma o lugar
+// dentro de um mutex — o widget deixou de interpretar uma folha de cálculo.
 //
-// Há duas formas possíveis de guardar a reserva:
-//   a) duas colunas separadas: "data" + "horario"
-//   b) uma coluna combinada: "2026-09-05 | 10:15-11:00"
+// Pode viver num repositório público: este endereço só devolve contagens de
+// vagas e só aceita marcar reservas. Não deixa ler nada da folha.
 //
-// A folha das submissões do JotForm usa a forma (b), na coluna
-// "reserva" (a label do campo é "Reserva"). Aceitamos as duas formas
-// e vários nomes possíveis, porque foi precisamente um nome de coluna
-// errado que fez as vagas nunca descerem.
-const COLUNA_DATA = "data";
-const COLUNA_HORARIO = "horario";
-const COLUNAS_RESERVA = ["reserva", "resultado", "respostaFinal", "typeA137"];
+// Se um dia for criada uma IMPLEMENTAÇÃO nova (em vez de uma versão nova da
+// mesma), o URL muda e tem de ser trocado aqui, senão o formulário deixa de
+// aceitar reservas.
+const RESERVAS_URL =
+  "https://script.google.com/macros/s/AKfycby8uX6UN3noJ7Y5Ep2uG_y2jvqMavPNEshMAKUkNxYgJL0o52PCbo2lrt8RAJ_Vv7lyAg/exec";
 
 // LABEL exata do campo Short Text criado no JotForm que vai receber
 // uma cópia do valor. É este campo normal que a integração exporta.
 // Pôr "" para desligar o espelho.
-//
-// TEM de coincidir letra a letra com a label no formulário. Estava
-// "Resultado", mas o campo do formulário chama-se "Reserva" (id_135,
-// nome único "respostaFinal"): o setFieldsValueByLabel não encontrava
-// nada, não dava erro, e o valor nunca chegava à submissão.
 const CAMPO_ESPELHO_LABEL = "Reserva";
 
 // ID da pergunta do mesmo campo ("id_135" no HTML do formulário ->
@@ -49,7 +29,7 @@ const CAMPO_ESPELHO_ID = "135";
 const OBRIGATORIO = true;
 
 // Quanto tempo esperamos pela revalidação das vagas na submissão.
-// Se o Sheety não responder neste tempo, DEIXAMOS PASSAR: bloquear
+// Se o servidor não responder neste tempo, DEIXAMOS PASSAR: bloquear
 // todas as reservas porque a API está lenta é pior do que o risco de
 // uma reserva a mais.
 const TIMEOUT_REVALIDACAO_MS = 4000;
@@ -62,12 +42,27 @@ const TIMEOUT_REVALIDACAO_MS = 4000;
 const DEBUG_FORCADO = false;
 const DEBUG = DEBUG_FORCADO || /[?&]debug=1/.test(location.search);
 
-const SLOTS = [
-  { time: "08:00-08:45", vagas: 3 },
-  { time: "08:45-09:30", vagas: 2 },
-  { time: "09:30-10:15", vagas: 3 },
-  { time: "10:15-11:00", vagas: 2 }
-];
+// Identifica ESTE preenchimento do formulário no servidor. É o que torna a
+// repetição do POST segura: com o mesmo token, o servidor devolve
+// "repetido" em vez de gastar um segundo lugar (ver reservarLugar).
+//
+// Tem de casar o ^[A-Za-z0-9-]{8,64}$ que o validarPedido_ exige.
+function gerarToken() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // Telemóveis antigos (e qualquer contexto não seguro) não têm
+  // crypto.randomUUID. Sem esta rede, o widget rebentava logo no arranque e
+  // ninguém conseguia reservar. Não precisa de ser criptográfico: só precisa
+  // de não colidir com o token de outro hóspede na mesma hora.
+  let t = "";
+  while (t.length < 32) {
+    t += Math.random().toString(36).replace(/[^a-z0-9]/g, "");
+  }
+  return t.slice(0, 32);
+}
+
+const TOKEN = gerarToken();
 
 // Valor final, ex.: "2026-08-20 | 08:45-09:30"
 let value = "";
@@ -119,48 +114,6 @@ function formatarValor(date, slot) {
   return `${date} | ${slot}`;
 }
 
-// O Google Sheets devolve às vezes a data como ISO completo
-// ("2025-12-31T00:00:00.000Z"). Só queremos YYYY-MM-DD.
-function normalizarData(v) {
-  const t = String(v == null ? "" : v).trim();
-  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : t;
-}
-
-// Aceita espaçamento diferente à volta do "|" ("a|b" == "a | b").
-const FORMATO_RESERVA = /^\d{4}-\d{2}-\d{2}\s*\|/;
-
-function normalizarReserva(v) {
-  return String(v == null ? "" : v).trim().replace(/\s*\|\s*/, " | ");
-}
-
-// Procura o valor combinado numa linha. Primeiro pelos nomes de coluna
-// conhecidos; se nenhum servir, aceita QUALQUER coluna cujo conteúdo
-// tenha o formato "AAAA-MM-DD | HH:MM-HH:MM". Essa última rede evita
-// que um nome de coluna inesperado volte a esconder as reservas.
-function valorCombinado(r) {
-  for (const c of COLUNAS_RESERVA) {
-    const v = normalizarReserva(r[c]);
-    if (v) return v;
-  }
-  for (const k of Object.keys(r)) {
-    const v = normalizarReserva(r[k]);
-    if (FORMATO_RESERVA.test(v)) return v;
-  }
-  return "";
-}
-
-// Uma linha da folha ocupa este slot se:
-//  - as colunas separadas "data"+"horario" coincidirem, OU
-//  - a coluna combinada for igual a "data | horario".
-function linhaOcupaSlot(r, selectedDate, slotTime) {
-  const d = normalizarData(r[COLUNA_DATA]);
-  const h = String(r[COLUNA_HORARIO] == null ? "" : r[COLUNA_HORARIO]).trim();
-  if (d && h) return d === selectedDate && h === slotTime;
-
-  return valorCombinado(r) === formatarValor(selectedDate, slotTime);
-}
-
 // ===============================
 // ESPELHO NUM CAMPO NORMAL
 // ===============================
@@ -170,8 +123,7 @@ function linhaOcupaSlot(r, selectedDate, slotTime) {
 // ATENÇÃO: por dentro, o setFieldsValueBy* é só um postMessage para o
 // formulário ("fields:fill"). Não devolve nada e não dá erro se o
 // campo não existir. Um alvo errado é indistinguível de sucesso visto
-// de dentro do widget — foi por isso que isto falhou tanto tempo em
-// silêncio. Escrevemos pelos DOIS caminhos para reduzir o risco.
+// de dentro do widget. Escrevemos pelos DOIS caminhos para reduzir o risco.
 function espelharEmCampo(v) {
   if (!temJF) return;
 
@@ -209,43 +161,29 @@ function espelharEmCampo(v) {
 }
 
 // ===============================
-// LEITURA DA FOLHA
+// LEITURA DAS VAGAS
 // ===============================
-// Usado tanto ao mostrar os horários como ao revalidar na submissão,
-// para que as duas contagens não possam divergir.
-async function buscarReservas() {
-  const response = await fetch(SHEETY_GET_URL, { cache: "no-store" });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const data = await response.json();
+// Os horários E os limites vêm do servidor (aba Capacidades). O widget já não
+// tem lista de slots nenhuma: mudar uma capacidade é mudar uma célula da
+// folha, sem republicar nada.
+async function buscarVagas(data) {
+  // `cache` é uma opção do fetch, não um cabeçalho nosso: continua a ser um
+  // pedido simples e não provoca o preflight de CORS que o Apps Script não
+  // sabe responder. Sem ele, o browser podia servir uma contagem velha.
+  const resposta = await fetch(
+    RESERVAS_URL + "?data=" + encodeURIComponent(data),
+    { cache: "no-store" }
+  );
+  if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
 
-  // O nome da coleção é o nome da aba da folha. Se apontarmos o
-  // Sheety a outra folha (ex.: "Form responses" -> "formResponses"),
-  // o nome muda. Em vez de partir, usamos a primeira coleção que
-  // vier na resposta.
-  let linhas = data[SHEETY_COLLECTION];
-  if (!Array.isArray(linhas)) {
-    const chave = Object.keys(data).find(k => Array.isArray(data[k]));
-    if (chave) {
-      linhas = data[chave];
-      log(`Coleção "${SHEETY_COLLECTION}" não existe; a usar "${chave}".`);
-    } else {
-      linhas = [];
-      log("AVISO: a resposta do Sheety não tem nenhuma lista de linhas.");
-    }
+  const corpo = await resposta.json();
+  // Um {ok:false} tem sempre um motivo e NUNCA é uma lista de vagas vazia.
+  // Tratá-lo como "sem vagas" mostrava "Sem vagas" em todos os horários e
+  // deixava o hóspede a acreditar no número.
+  if (!corpo || corpo.ok !== true) {
+    throw new Error("resposta sem ok: " + ((corpo && corpo.erro) || "desconhecido"));
   }
-  return linhas;
-}
-
-function limiteDoSlot(slotTime) {
-  const def = SLOTS.find(s => s.time === slotTime);
-  return def ? def.vagas : 0;
-}
-
-function vagasRestantes(reservas, date, slotTime) {
-  const usadas = reservas.filter(
-    r => linhaOcupaSlot(r, date, slotTime)
-  ).length;
-  return limiteDoSlot(slotTime) - usadas;
+  return corpo.slots || [];
 }
 
 // ===============================
@@ -267,52 +205,41 @@ async function carregarSlots(selectedDate) {
   slotsList.textContent = "A carregar...";
   ajustarAltura();
 
-  let reservas = [];
+  let slots = [];
   try {
-    reservas = await buscarReservas();
+    slots = await buscarVagas(selectedDate);
 
     // Já há um pedido mais recente: esta resposta está velha.
     if (minhaGeracao !== geracao) return;
-
-    if (reservas.length) {
-      log("Colunas na folha: " + Object.keys(reservas[0]).join(", "));
-      const separadas = reservas.filter(
-        r => r[COLUNA_DATA] && r[COLUNA_HORARIO]
-      ).length;
-      const combinadas = reservas.filter(r => valorCombinado(r)).length;
-      log(`${reservas.length} linhas: ${separadas} com "${COLUNA_DATA}"+"${COLUNA_HORARIO}", ${combinadas} com reserva combinada`);
-      if (separadas === 0 && combinadas === 0) {
-        log("AVISO: nenhuma coluna reconhecida. As vagas nunca vão descer.");
-      }
-    } else {
-      log("A folha está vazia (0 linhas).");
-    }
   } catch (err) {
     if (minhaGeracao !== geracao) return;
     console.error("Erro ao carregar vagas", err);
     slotsList.textContent = "Erro ao carregar vagas. Tente novamente.";
-    log("ERRO no GET ao Sheety: " + err.message);
+    log("ERRO no GET das vagas: " + err.message);
     ajustarAltura();
     return;
   }
 
   slotsList.textContent = "";
 
-  SLOTS.forEach(slot => {
-    const restantes = vagasRestantes(reservas, selectedDate, slot.time);
+  slots.forEach(slot => {
+    const horario = String((slot && slot.horario) || "");
+    if (!horario) return;
+    const restantes = Number(slot.restantes);
 
-    if (restantes <= 0) {
+    if (!(restantes > 0)) {
       const p = document.createElement("p");
-      p.textContent = `${slot.time} — Sem vagas`;
+      p.textContent = `${horario} — Sem vagas`;
       slotsList.appendChild(p);
       return;
     }
 
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.dataset.slot = slot.time;
+    btn.dataset.slot = horario;
     btn.dataset.restantes = restantes;
-    btn.addEventListener("click", () => selecionar(selectedDate, slot.time));
+    // A data fica no closure de propósito (ver a guarda de geração acima).
+    btn.addEventListener("click", () => selecionar(selectedDate, horario));
     slotsList.appendChild(btn);
   });
 
@@ -323,9 +250,8 @@ async function carregarSlots(selectedDate) {
 // ===============================
 // SELECIONAR HORÁRIO
 // ===============================
-// Nada é escrito no Sheety aqui. A linha é criada pela integração do
-// JotForm na submissão, para não gastar vagas com formulários
-// abandonados e para manter menu + reserva na mesma linha.
+// Escolher não reserva nada: o lugar só é tomado na submissão, para não
+// gastar vagas com formulários abandonados.
 function selecionar(date, slot) {
   // Defesa em profundidade: um botão guarda a sua data no closure.
   // Se por alguma razão não for a data que está à vista no campo,
@@ -399,14 +325,14 @@ iniciarUI();
 //
 // LIMITE: isto encurta a janela, não a fecha. Duas submissões
 // simultâneas podem passar as duas na verificação. Fechar a janela por
-// completo exige uma reserva atómica do lado do servidor, que o Sheety
-// não oferece.
+// completo exige uma reserva atómica do lado do servidor.
 async function slotAindaTemVagas(date, slot) {
   try {
-    const reservas = await buscarReservas();
-    const restantes = vagasRestantes(reservas, date, slot);
+    const slots = await buscarVagas(date);
+    const def = slots.find(s => s && s.horario === slot);
+    const restantes = def ? Number(def.restantes) : 0;
     log(`Revalidação: ${slot} em ${date} -> ${restantes} vaga(s).`);
-    return { cheio: restantes <= 0 };
+    return { cheio: !(restantes > 0) };
   } catch (e) {
     // Falha de rede: não bloqueamos (ver TIMEOUT_REVALIDACAO_MS).
     log("Revalidação falhou (" + e.message + "): a deixar passar.");
@@ -501,4 +427,22 @@ if (!temJF) {
         JFCustomWidget.sendSubmit({ valid: true, value: value });
       });
   });
+}
+
+// Só para os testes em Node. No browser não existe `module` e este bloco é
+// ignorado.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    RESERVAS_URL: RESERVAS_URL,
+    TOKEN: TOKEN,
+    gerarToken: gerarToken,
+    hojeLocal: hojeLocal,
+    formatarValor: formatarValor,
+    buscarVagas: buscarVagas,
+    carregarSlots: carregarSlots,
+    selecionar: selecionar,
+    desenharBotoes: desenharBotoes,
+    slotAindaTemVagas: slotAindaTemVagas,
+    valorEscolhido: function () { return value; }
+  };
 }
