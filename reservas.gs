@@ -550,7 +550,22 @@ function campoEm_(campos, padrao, soRespostas) {
   return "";
 }
 
-var NOME_CAMPO_QUARTO = /quarto|room/i;
+// O campo do quarto NÃO tem "quarto" nem "room" no nome: no rawRequest deste
+// formulário chega como `q6_typeA` (verificado no DOM do formulário
+// publicado). Só com `/quarto|room/` a coluna `quarto` ficava vazia em todas
+// as reservas, e o registo que a cozinha lê de manhã perdia metade da
+// identidade.
+//
+// Um `/typea/i` à solta não serve: `typeA` é o nome genérico da JotForm para
+// uma caixa de texto curta, e num formulário com várias apanhava a errada. O
+// que identifica este campo é o ID DA PERGUNTA — e isso ATA esta constante a
+// ESTE formulário. Se o formulário for reconstruído, o id muda, o `quarto`
+// volta a ficar vazio (em silêncio) e é aqui que se corrige.
+//
+// O `^q6_` só casa na segunda passagem do campoEm_, contra a chave inteira:
+// na primeira, que compara contra o nome da pergunta ("typeA"), não casa
+// nada. Um campo mesmo chamado "quarto" continua a ganhar-lhe.
+var NOME_CAMPO_QUARTO = /quarto|room|^q6_/i;
 var NOME_CAMPO_NOME = /nome|name/i;
 
 // As reservas DISTINTAS escritas nas chaves cujo nome casa `padraoChave`.
@@ -1241,6 +1256,8 @@ if (typeof module !== "undefined") {
     reconciliar_: reconciliar_,
     achatarValor_: achatarValor_,
     campoPorNome_: campoPorNome_,
+    NOME_CAMPO_QUARTO: NOME_CAMPO_QUARTO,
+    NOME_CAMPO_NOME: NOME_CAMPO_NOME,
     dadosDoWebhook_: dadosDoWebhook_,
     confirmarWebhook_: confirmarWebhook_,
     reservar_: reservar_,

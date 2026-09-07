@@ -809,6 +809,45 @@ test("campoPorNome_ é tolerante ao nome do campo e nunca devolve a reserva", ()
   assert.equal(gs.campoPorNome_({}, /nome/i), "");
 });
 
+test("o quarto é encontrado nas chaves reais deste formulário", () => {
+  // Verificado no DOM do formulário publicado: o campo do quarto chega como
+  // `q6_typeA` e não tem "quarto" nem "room" no nome. Com o padrão anterior
+  // a coluna `quarto` ficava vazia em TODAS as reservas e o registo que a
+  // cozinha lê de manhã perdia metade da identidade.
+  const campos = {
+    q6_typeA: "12",
+    q5_name: { first: "Ana", last: "Silva" },
+    q4_email: "ana@exemplo.pt",
+    q137_typeA137: "2026-09-08 | 08:45-09:30"
+  };
+
+  assert.equal(gs.campoPorNome_(campos, gs.NOME_CAMPO_QUARTO), "12");
+  assert.equal(gs.campoPorNome_(campos, gs.NOME_CAMPO_NOME), "Ana Silva");
+  assert.deepEqual(gs.dadosDoWebhook_(JSON.stringify(campos)), {
+    data: "2026-09-08", horario: "08:45-09:30", quarto: "12", nome: "Ana Silva"
+  });
+});
+
+test("o padrão do quarto não apanha qualquer caixa de texto curta", () => {
+  // `typeA` é o nome genérico da JotForm para uma caixa de texto curta: um
+  // `/typea/i` à solta apanhava a primeira que aparecesse. O que identifica
+  // este campo é o ID DA PERGUNTA — o que ata a constante a ESTE formulário.
+  assert.equal(
+    gs.campoPorNome_({ q6_typeA: "12", q7_typeA: "outra caixa" }, gs.NOME_CAMPO_QUARTO),
+    "12"
+  );
+  assert.equal(
+    gs.campoPorNome_({ q7_typeA: "outra caixa" }, gs.NOME_CAMPO_QUARTO),
+    ""
+  );
+  // Um campo mesmo chamado "quarto" continua a ganhar ao id: é a primeira
+  // passagem do campoEm_, a que compara contra o nome da pergunta.
+  assert.equal(
+    gs.campoPorNome_({ q6_typeA: "12", q9_quarto: "14" }, gs.NOME_CAMPO_QUARTO),
+    "14"
+  );
+});
+
 test("dadosDoWebhook_ lê a reserva, o quarto e o nome", () => {
   assert.deepEqual(gs.dadosDoWebhook_(raw()), {
     data: "2026-09-08", horario: "08:45-09:30", quarto: "12", nome: "Ana Silva"
