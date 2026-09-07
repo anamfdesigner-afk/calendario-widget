@@ -338,10 +338,11 @@ function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
 // depois de cada reserva o lugar é libertado e revendido, em silêncio.
 //
 // Por isso recusamos reconciliar quando as provas parecem INCOMPLETAS, e
-// não apenas quando faltam de todo. `marca` é a contagem de linhas da
-// Form responses registada na instalação: as linhas anteriores estão
-// isentas (a folha tem ~49 linhas históricas cujo `Reserva` nunca foi
-// escrito, e essas não podem travar a reconciliação para sempre), mas
+// não apenas quando faltam de todo. `marca` é a marca de água gravada pelo
+// semear_ — uma linha à frente da última submissão com reserva legível (ver
+// marcaSemeadura_): as linhas anteriores estão isentas (a folha tem ~49
+// linhas históricas cujo `Reserva` nunca foi escrito, e essas não podem
+// travar a reconciliação para sempre), mas
 // todas as posteriores têm de trazer uma reserva legível. O widget tem
 // OBRIGATORIO = true, logo uma submissão nova sem reserva não é um
 // hóspede que não escolheu: é o espelho partido.
@@ -500,6 +501,48 @@ function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
   return out;
 }
 
+// Onde pôr a marca de água: UMA LINHA À FRENTE da última que traz uma
+// reserva legível — e NÃO a contagem de linhas da folha.
+//
+// A diferença entre as duas é a diferença entre uma escotilha e um rombo.
+// Remarcar é o único remédio no script para uma reconciliação travada por um
+// período de espelho partido que já foi reparado, e o sintoma de a guarda
+// estar a disparar ("Sem vagas" num slot que o dono sabe vazio) é
+// indistinguível, para ele, de um espelho partido. Ou seja: a ação que ele
+// tem à mão para resolver o sintoma é exatamente a que era perigosa.
+// Reproduzido com a contagem de linhas: espelho partido, o reservar_ recusa
+// corretamente, um semear_ pelo meio, e o pedido seguinte revogava uma
+// reserva genuína (expiradas: [1]) e revendia o lugar.
+//
+// Com a marca uma à frente da última legível:
+//
+// - Espelho reparado (brancas do período partido, depois linhas boas): a
+//   última legível está no fim, as brancas ficam ANTES da marca, ficam
+//   isentas, e a reconciliação retoma. A escotilha continua a funcionar.
+// - Espelho ainda partido (as brancas são a cauda da folha): a última
+//   legível está atrás, as brancas ficam DEPOIS da marca, e a guarda
+//   MANTÉM-SE armada. Remarcar passa a ser um não-evento precisamente no
+//   caso em que era perigoso.
+//
+// Dito de outra maneira: depois de remarcar, a guarda fica armada se e só se
+// a ÚLTIMA linha da folha não tiver reserva legível — que é a definição
+// operacional de "o espelho está partido agora". É por isso que o preparar()
+// pode ser corrido outra vez sem medo.
+//
+// Sem nenhuma linha legível devolve 1, ou seja nenhuma isenção: é o regime
+// estrito do marcaDe_, pela mesma razão — sem provas de que o espelho
+// escreve, não isentamos ninguém.
+function marcaSemeadura_(submissoes, idxColuna) {
+  var ultima = 0;
+  if (idxColuna >= 0) {
+    for (var i = 1; i < (submissoes || []).length; i++) {
+      var v = normalizarReserva_((submissoes[i] || [])[idxColuna]);
+      if (FORMATO_RESERVA_COMPLETO.test(v)) ultima = i;
+    }
+  }
+  return ultima + 1;
+}
+
 // Núcleo da semeadura, com a E/S injetada para ser testável em Node.
 function semear_(io) {
   var submissoes = io.lerSubmissoes();
@@ -513,19 +556,12 @@ function semear_(io) {
 
   // A marca de água: daqui para a frente, toda a linha nova tem de trazer
   // uma reserva legível, senão a reconciliação para (ver
-  // submissoesFiaveis_).
-  //
-  // Correr semear() outra vez volta a marcar, e é esse o remédio para um
-  // caso concreto: o espelho do JotForm esteve partido durante um tempo, já
-  // foi corrigido, mas as linhas em branco daquele período ficam na folha
-  // para sempre e travariam a reconciliação para sempre. Remarcar aceita-as
-  // como históricas. Por isso mesmo, NÃO é rotina: remarcar com o espelho
-  // AINDA partido desliga a única guarda que impede reservas reais de serem
-  // libertadas e revendidas. O guia diz ao dono para só correr semear() a
-  // pedido.
-  if (io.gravarMarca) io.gravarMarca(submissoes.length);
+  // submissoesFiaveis_). Ver marcaSemeadura_ para a razão de não ser a
+  // contagem de linhas.
+  var marca = marcaSemeadura_(submissoes, colunaReserva_(submissoes));
+  if (io.gravarMarca) io.gravarMarca(marca);
 
-  return { semeadas: plano.length, marca: submissoes.length };
+  return { semeadas: plano.length, marca: marca };
 }
 
 // Corre a partir do editor. O preparar() já a chama; fica separadamente
@@ -857,6 +893,12 @@ function preparar_() {
   // Só depois de as abas existirem: as reservas futuras que já foram
   // vendidas têm de entrar no registo, senão os lugares delas aparecem
   // livres e são vendidos outra vez.
+  //
+  // Isto corre SEMPRE, também quando o dono repete o preparar() — e o guia
+  // nunca lho proibiu. É seguro nas duas frentes: a semeadura decide por
+  // contagens e nunca duplica (ver planoSemeadura_), e a marca de água não
+  // isenta uma cauda de linhas em branco, logo repetir não desarma a guarda
+  // do espelho partido (ver marcaSemeadura_).
   var semeadas = semear_(ioReal_()).semeadas;
 
   // Devolvemos o nome da aba encontrada para o dono o CONFIRMAR na
@@ -920,6 +962,7 @@ if (typeof module !== "undefined") {
     escolherAbaSubmissoes_: escolherAbaSubmissoes_,
     tokenSemeado_: tokenSemeado_,
     tokenExiste_: tokenExiste_,
+    marcaSemeadura_: marcaSemeadura_,
     planoSemeadura_: planoSemeadura_,
     semear_: semear_,
     criadoIso_: criadoIso_,

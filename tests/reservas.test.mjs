@@ -551,10 +551,136 @@ test("as linhas históricas em branco continuam a permitir reconciliar órfãs",
   assert.deepEqual(estado.expiradas, [1]);
 });
 
-test("semear_ grava a marca de água com a contagem de linhas das submissões", () => {
+test("semear_ grava a marca de água uma linha à frente da última reserva legível", () => {
   const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
   gs.semear_(io);
+  // Todas as linhas trazem reserva, logo a marca coincide com a contagem.
   assert.equal(estado.marca, SUBMISSOES_TRES.length);
+});
+
+// ===============================
+// A MARCA DE ÁGUA NÃO É A CONTAGEM DE LINHAS
+// ===============================
+// Remarcar é o único remédio no script para uma reconciliação travada por um
+// período de espelho partido já reparado. Com a marca a valer a CONTAGEM de
+// linhas, remarcar com o espelho AINDA partido isentava as linhas em branco
+// e desarmava a guarda do C2: reproduzido, o pedido seguinte revogava uma
+// reserva genuína (expiradas: [1]) e revendia o lugar.
+//
+// A marca é UMA À FRENTE da última linha com reserva legível. As linhas em
+// branco de um período já reparado ficam ANTES dela (isentas, a
+// reconciliação retoma); as de um espelho ainda partido são a cauda da
+// folha, ficam DEPOIS dela, e a guarda mantém-se armada.
+
+test("marcaSemeadura_ nos casos de fronteira", () => {
+  const CAB_SUB = ["Submission Date", "Email", "Reserva"];
+  const BOA = "2026-09-09 | 08:00-08:45";
+
+  // Sem submissões: nada legível, logo nenhuma linha fica isenta.
+  assert.equal(gs.marcaSemeadura_([], -1), 1);
+  assert.equal(gs.marcaSemeadura_([CAB_SUB], -1), 1);
+
+  // Todas legíveis: a marca é o fim da folha, nada por verificar.
+  assert.equal(
+    gs.marcaSemeadura_([CAB_SUB, ["d", "e", BOA], ["d", "e", BOA]], 2),
+    3
+  );
+
+  // Todas em branco: regime estrito, nenhuma isenção.
+  assert.equal(gs.marcaSemeadura_([CAB_SUB, ["d", "e", ""], ["d", "e", ""]], 2), 1);
+
+  // Brancas intercaladas entre legíveis: a última legível manda.
+  assert.equal(
+    gs.marcaSemeadura_(
+      [CAB_SUB, ["d", "e", BOA], ["d", "e", ""], ["d", "e", BOA]],
+      2
+    ),
+    4
+  );
+
+  // Uma única legível no fim de uma corrida longa de brancas: o espelho
+  // voltou a escrever, logo as brancas de trás são históricas.
+  assert.equal(
+    gs.marcaSemeadura_(
+      [CAB_SUB, ["d", "e", ""], ["d", "e", ""], ["d", "e", ""], ["d", "e", BOA]],
+      2
+    ),
+    5
+  );
+
+  // Brancas na cauda: a marca fica antes delas e a guarda continua armada.
+  assert.equal(
+    gs.marcaSemeadura_(
+      [CAB_SUB, ["d", "e", BOA], ["d", "e", ""], ["d", "e", ""]],
+      2
+    ),
+    2
+  );
+
+  // Sem coluna legível não há nada em que basear isenções.
+  assert.equal(gs.marcaSemeadura_([CAB_SUB, ["d", "e", BOA]], -1), 1);
+});
+
+test("remarcar com o espelho ainda partido não desarma a guarda", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes: SUBS_ESPELHO_PARTIDO, marca: 1 }
+  );
+
+  // Capacidade 2, duas reservas genuínas, e a submissão mais recente sem
+  // valor: a guarda recusa reconciliar e o slot está mesmo cheio.
+  assert.deepEqual(
+    gs.reservar_(PEDIDO, io),
+    { ok: true, reservado: false, motivo: "cheio", restantes: 0 }
+  );
+  assert.deepEqual(estado.expiradas, []);
+
+  // O sintoma que o dono vê ("Sem vagas" num slot que ele sabe vazio) é
+  // indistinguível de um espelho partido, e correr semear() é o único
+  // remédio à mão dele. Não pode ser isso a abrir a porta.
+  gs.semear_(io);
+
+  assert.deepEqual(
+    gs.reservar_(PEDIDO, io),
+    { ok: true, reservado: false, motivo: "cheio", restantes: 0 },
+    "remarcar não pode admitir um terceiro hóspede"
+  );
+  assert.deepEqual(estado.expiradas, [], "nenhuma reserva genuína pode ser revogada");
+  assert.equal(estado.reservas[1][4], "activo");
+});
+
+test("remarcar depois de o espelho sarar volta a permitir reconciliar", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const submissoes = [
+    ["Submission Date", "Email", "Reserva"],
+    ["2026-09-01", "a@b.pt", ""],                            // período partido
+    ["2026-09-02", "c@d.pt", "2026-09-08 | 08:45-09:30"]     // espelho reparado
+  ];
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes, marca: 1 }
+  );
+
+  // Com a marca a 1, a linha em branco do período partido é posterior à
+  // marca e trava a reconciliação para sempre.
+  assert.equal(gs.reservar_(PEDIDO, io).reservado, false);
+  assert.deepEqual(estado.expiradas, []);
+
+  // Remarcar aceita as brancas de trás como históricas — é para isto que a
+  // escotilha existe, e tem de continuar a funcionar.
+  gs.semear_(io);
+
+  assert.equal(gs.reservar_(PEDIDO, io).reservado, true);
+  assert.deepEqual(estado.expiradas, [1], "a órfã mais antiga é libertada");
 });
 
 // ===============================
