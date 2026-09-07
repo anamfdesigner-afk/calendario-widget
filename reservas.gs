@@ -131,6 +131,100 @@ function validarPedido_(pedido, caps, hoje) {
 }
 
 // ===============================
+// RECONCILIAÇÃO (funções puras)
+// ===============================
+// Uma reserva genuína deixa rasto em DOIS sítios: uma linha na aba
+// Reservas (escrita por nós) e uma linha na Form responses (escrita pela
+// integração do JotForm). Uma reserva abandonada deixa rasto só no
+// primeiro. Logo, o excedente de linhas antigas sem contrapartida nas
+// submissões são órfãs, e podem ser libertadas.
+//
+// Casamos por CONTAGENS, não por identidade: por isso não é preciso
+// campo novo no JotForm nem espelhar o token. A troco disso, não sabemos
+// QUAL das linhas é a órfã — e não precisamos, só de quantas.
+
+var FORMATO_RESERVA_COMPLETO = /^\d{4}-\d{2}-\d{2}\s*\|\s*\d{2}:\d{2}-\d{2}:\d{2}$/;
+
+// Procura a coluna "Reserva" na Form responses: primeiro pelo cabeçalho,
+// depois por conteúdo. Devolver -1 é o sinal de "não sei ler isto", e quem
+// chama TEM de tratar isso como "não reconciliar nada".
+function colunaReserva_(linhas) {
+  if (!linhas || !linhas.length) return -1;
+
+  var cabecalho = linhas[0] || [];
+  for (var c = 0; c < cabecalho.length; c++) {
+    if (/reserva/i.test(String(cabecalho[c] == null ? "" : cabecalho[c]))) return c;
+  }
+
+  // Rede de segurança: a coluna com mais valores no formato certo.
+  var melhor = -1;
+  var melhorContagem = 0;
+  var largura = 0;
+  for (var i = 0; i < linhas.length; i++) {
+    largura = Math.max(largura, (linhas[i] || []).length);
+  }
+  for (var col = 0; col < largura; col++) {
+    var n = 0;
+    for (var r = 1; r < linhas.length; r++) {
+      var v = normalizarReserva_((linhas[r] || [])[col]);
+      if (FORMATO_RESERVA_COMPLETO.test(v)) n++;
+    }
+    if (n > melhorContagem) {
+      melhorContagem = n;
+      melhor = col;
+    }
+  }
+  return melhorContagem > 0 ? melhor : -1;
+}
+
+function contarSubmissoes_(linhas, idxColuna) {
+  var mapa = {};
+  if (idxColuna < 0) return mapa;
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var v = normalizarReserva_((linhas[i] || [])[idxColuna]);
+    if (!v) continue;
+    mapa[v] = (mapa[v] || 0) + 1;
+  }
+  return mapa;
+}
+
+function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
+  var porSlot = {};
+
+  for (var i = 1; i < (reservas || []).length; i++) {
+    var l = reservas[i] || [];
+    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+
+    var criado = l[COL_CRIADO] instanceof Date
+      ? l[COL_CRIADO].getTime()
+      : Date.parse(String(l[COL_CRIADO]));
+    // Sem timestamp legível não arriscamos: deixamos a linha em paz.
+    if (!isFinite(criado)) continue;
+    if (agoraMs - criado <= janelaMs) continue;
+
+    var chave = normalizarData_(l[COL_DATA]) + " | " + String(l[COL_HORARIO]).trim();
+    if (!porSlot[chave]) porSlot[chave] = [];
+    porSlot[chave].push({ indice: i, criado: criado });
+  }
+
+  var expirar = [];
+  for (var chave2 in porSlot) {
+    if (!Object.prototype.hasOwnProperty.call(porSlot, chave2)) continue;
+    var antigas = porSlot[chave2];
+    antigas.sort(function (a, b) { return a.criado - b.criado; });
+
+    var confirmadas = submissoes[chave2] || 0;
+    var excedente = antigas.length - confirmadas;
+    for (var k = 0; k < excedente && k < antigas.length; k++) {
+      expirar.push(antigas[k].indice);
+    }
+  }
+
+  expirar.sort(function (a, b) { return a - b; });
+  return expirar;
+}
+
+// ===============================
 // EXPORTAÇÃO PARA OS TESTES
 // ===============================
 // No Apps Script "module" não existe, logo este bloco é ignorado. Em Node
@@ -143,6 +237,9 @@ if (typeof module !== "undefined") {
     normalizarReserva_: normalizarReserva_,
     activos_: activos_,
     linhaDoToken_: linhaDoToken_,
-    validarPedido_: validarPedido_
+    validarPedido_: validarPedido_,
+    colunaReserva_: colunaReserva_,
+    contarSubmissoes_: contarSubmissoes_,
+    planoReconciliacao_: planoReconciliacao_
   };
 }

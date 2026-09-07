@@ -119,3 +119,103 @@ test("validarPedido_ aceita hoje", () => {
   const hoje = { token: "abcd-1234-efgh", data: "2026-09-07", horario: "08:00-08:45" };
   assert.deepEqual(gs.validarPedido_(hoje, CAPS, "2026-09-07"), { ok: true });
 });
+
+const JANELA = 20 * 60 * 1000;
+const AGORA = Date.parse("2026-09-08T12:00:00Z");
+const VELHO = new Date(AGORA - 60 * 60 * 1000);   // 1 hora: fora da janela
+const NOVO = new Date(AGORA - 60 * 1000);         // 1 minuto: dentro da janela
+
+test("colunaReserva_ encontra a coluna pelo cabeçalho", () => {
+  const linhas = [
+    ["Submission Date", "Email", "Reserva", "typeA137"],
+    ["2026-09-01", "a@b.pt", "2026-09-08 | 08:00-08:45", ""]
+  ];
+  assert.equal(gs.colunaReserva_(linhas), 2);
+});
+
+test("colunaReserva_ cai para a coluna cujos valores têm o formato certo", () => {
+  const linhas = [
+    ["Submission Date", "Email", "Coluna Renomeada"],
+    ["2026-09-01", "a@b.pt", "2026-09-08 | 08:00-08:45"],
+    ["2026-09-02", "c@d.pt", "2026-09-08 | 08:45-09:30"]
+  ];
+  assert.equal(gs.colunaReserva_(linhas), 2);
+});
+
+test("colunaReserva_ devolve -1 quando não há nada reconhecível", () => {
+  assert.equal(gs.colunaReserva_([["Data", "Email"], ["2026-09-01", "a@b.pt"]]), -1);
+  assert.equal(gs.colunaReserva_([]), -1);
+});
+
+test("contarSubmissoes_ agrupa por valor normalizado", () => {
+  const linhas = [
+    ["Reserva"],
+    ["2026-09-08 | 08:00-08:45"],
+    ["2026-09-08|08:00-08:45"],
+    ["2026-09-08 | 08:45-09:30"],
+    [""]
+  ];
+  assert.deepEqual(gs.contarSubmissoes_(linhas, 0), {
+    "2026-09-08 | 08:00-08:45": 2,
+    "2026-09-08 | 08:45-09:30": 1
+  });
+});
+
+test("planoReconciliacao_ liberta a órfã antiga sem rasto nas submissões", () => {
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
+    ["t2", "2026-09-08", "08:00-08:45", VELHO, "activo"]
+  ];
+  // Só UMA das duas chegou às submissões: a outra é órfã.
+  const subs = { "2026-09-08 | 08:00-08:45": 1 };
+  assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), [1]);
+});
+
+test("planoReconciliacao_ escolhe as mais antigas primeiro", () => {
+  const maisVelho = new Date(AGORA - 3 * 60 * 60 * 1000);
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
+    ["t2", "2026-09-08", "08:00-08:45", maisVelho, "activo"]
+  ];
+  // Ambas expiram; os índices vêm por ordem crescente.
+  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), [1, 2]);
+});
+
+test("planoReconciliacao_ nunca toca em linhas dentro da janela", () => {
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", NOVO, "activo"],
+    ["t2", "2026-09-08", "08:00-08:45", NOVO, "activo"]
+  ];
+  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), []);
+});
+
+test("planoReconciliacao_ não liberta nada quando as submissões cobrem tudo", () => {
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
+    ["t2", "2026-09-08", "08:00-08:45", VELHO, "activo"]
+  ];
+  const subs = { "2026-09-08 | 08:00-08:45": 5 };
+  assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), []);
+});
+
+test("planoReconciliacao_ ignora linhas já expiradas", () => {
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", VELHO, "expirado"]
+  ];
+  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), []);
+});
+
+test("planoReconciliacao_ trata cada slot em separado", () => {
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
+    ["t2", "2026-09-08", "08:45-09:30", VELHO, "activo"]
+  ];
+  const subs = { "2026-09-08 | 08:45-09:30": 1 };
+  assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), [1]);
+});
