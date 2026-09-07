@@ -448,3 +448,26 @@ test("ioReal_ semeia o cabeçalho numa aba Reservas vazia, e lerReservas trata [
   assert.deepEqual(linhas[0], CAB);
   assert.equal(linhas.length, 2);
 });
+
+test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha", () => {
+  // A aritmética (índice + 1, COL_ESTADO + 1) é a de maior consequência do
+  // ficheiro — está correta "por inspeção", mas isso não chega: fica pinada
+  // aqui contra uma folha falsa que grava as chamadas a getRange.
+  const chamadasGetRange = [];
+  const folhaFalsa = {
+    getRange: (linha, coluna) => {
+      chamadasGetRange.push([linha, coluna]);
+      return { setValue: () => {} };
+    }
+  };
+  const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
+  const gsComStub = carregarGs(new URL("../reservas.gs", import.meta.url).pathname, {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
+  });
+
+  gsComStub.ioReal_().expirar([1]);
+
+  // índice 1 (a segunda linha do array, cabeçalho incluído) → linha 2 da
+  // folha; COL_ESTADO = 4 → coluna 5.
+  assert.deepEqual(chamadasGetRange, [[2, 5]]);
+});
