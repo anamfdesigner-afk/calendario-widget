@@ -1597,12 +1597,8 @@ function preparar_() {
   if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
   garantirCabecalho_(reservas);
 
-  // Texto simples nas colunas que o Sheets teria coagido — as duas datas
-  // (ver formatarTexto_), o quarto, porque um quarto "007" virava 7, o nome,
-  // pela mesma razão: um hóspede chamado "7" é improvável, mas um nome que
-  // comece por "=" ou por "+" é lido pelo Sheets como fórmula e a célula
-  // devolve um erro em vez do nome. Mas SÓ enquanto a aba não tiver linhas de
-  // dados.
+  // Texto simples nas duas colunas de DATA (ver formatarTexto_), e SÓ
+  // enquanto a aba não tiver linhas de dados.
   //
   // A razão é uma versão anterior deste script, que deixava o appendRow
   // coagir as strings ISO em células de DATA. Reformatar essa coluna para
@@ -1627,25 +1623,33 @@ function preparar_() {
   if (reservas.getLastRow() <= 1) {
     formatarTexto_(reservas, COL_DATA);
     formatarTexto_(reservas, COL_CRIADO);
-    formatarTexto_(reservas, COL_QUARTO);
-    formatarTexto_(reservas, COL_NOME);
   }
 
-  // A `submissao` fica FORA dessa guarda, e é de propósito. O risco acima é o
-  // de reformatar uma coluna cujas células JÁ foram coagidas; a `submissao` é
-  // uma coluna NOVA, vazia em todas as linhas anteriores, e o
-  // setNumberFormat("@") não altera valor nenhum — não há aqui nada que possa
-  // ser desfeito.
+  // O `quarto`, o `nome` e a `submissao` ficam FORA dessa guarda, e é de
+  // propósito. O risco acima é o de reformatar uma coluna cujas células JÁ
+  // foram coagidas; estas três são colunas NOVAS, vazias em todas as linhas
+  // anteriores, e o setNumberFormat("@") não altera valor nenhum — não há
+  // aqui nada que possa ser desfeito.
   //
-  // Presa à guarda, a coluna ficava em "Automático" em todas as folhas que já
-  // tinham linhas — que é o caso da folha do dono, com as reservas de teste.
-  // O primeiro `confirmar` escrevia lá um `submissionID` de 19 dígitos, o que
-  // passa a precisão de um double: o Sheets guardava 6437228876324829184 no
-  // lugar de 6437228876324828909. A chave deixava de casar com o texto da aba
-  // das respostas, o plano saía sempre vazio, e a funcionalidade morria em
-  // SILÊNCIO — com o preparar() a dizer que estava tudo bem. Ver o teste
-  // "numa aba Reservas que já tem linhas, o submissionID sobrevive ao
-  // preparar()".
+  // Presas à guarda, ficavam em "Automático" em todas as folhas que já tinham
+  // linhas — que é o caso da folha do dono, com as reservas de teste. E aí:
+  //
+  // - a `submissao` recebia no primeiro `confirmar` um `submissionID` de 19
+  //   dígitos, o que passa a precisão de um double: o Sheets guardava
+  //   6437228876324829184 no lugar de 6437228876324828909. A chave deixava de
+  //   casar com o texto da aba das respostas, o plano do espelho saía sempre
+  //   vazio, e a funcionalidade morria em SILÊNCIO — com o preparar() a dizer
+  //   que estava tudo bem;
+  // - o `quarto` "007" era guardado como o número 7 (medido), e um `nome`
+  //   começado por "=" ou por "+" é lido pelo Sheets como fórmula e a célula
+  //   devolve um erro em vez do nome. Nada no programa lê estas duas colunas,
+  //   por isso nenhum lugar está em risco — mas é o dono que as lê todas as
+  //   manhãs para saber quem se senta à mesa.
+  //
+  // Ver os testes "numa aba Reservas que já tem linhas, o submissionID
+  // sobrevive ao preparar()" e "... o quarto \"007\" sobrevive ao preparar()".
+  formatarTexto_(reservas, COL_QUARTO);
+  formatarTexto_(reservas, COL_NOME);
   formatarTexto_(reservas, COL_SUBMISSAO);
 
   var caps = folha_(ABA_CAPACIDADES, true);

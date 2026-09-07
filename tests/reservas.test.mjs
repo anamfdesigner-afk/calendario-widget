@@ -1490,7 +1490,7 @@ test("preparar() põe data, criado, quarto, nome e submissao em texto simples", 
   ]);
 });
 
-test("preparar() não reformata uma aba Reservas que já tem reservas", () => {
+test("preparar() não reformata a data nem o criado numa aba que já tem reservas", () => {
   // Uma versão anterior deste script deixava o appendRow coagir as strings em
   // células de DATA. Pôr essa coluna a texto simples não desfaz a coerção: a
   // célula pode passar a devolver o número de série do Sheets, o
@@ -1507,16 +1507,56 @@ test("preparar() não reformata uma aba Reservas que já tem reservas", () => {
 
   gsComStub.preparar();
 
-  // A `submissao` (coluna 8) é a excepção, e é a única: é uma coluna NOVA,
-  // vazia em todas as linhas anteriores, logo não há coerção nenhuma para
-  // desfazer — e sem este formato o primeiro id de 19 dígitos era coagido a
-  // double e a funcionalidade morria em silêncio.
+  // As três colunas NOVAS — `quarto` (6), `nome` (7) e `submissao` (8) — são
+  // a excepção, e são as únicas: estão vazias em todas as linhas anteriores,
+  // logo não há coerção nenhuma para desfazer. Sem este formato, o primeiro id
+  // de 19 dígitos era coagido a double e o espelho morria em silêncio, e o
+  // quarto "007" era guardado como o número 7.
+  //
+  // A `data` (2) e o `criado` (4) é que ficam de fora: aí o risco é real.
   assert.deepEqual(
     livro.formatos.filter(f => f.aba === "Reservas"),
-    [{ aba: "Reservas", coluna: 8, formato: "@" }],
-    "uma aba com dados só pode ser reformatada na coluna nova e vazia"
+    [
+      { aba: "Reservas", coluna: 6, formato: "@" },
+      { aba: "Reservas", coluna: 7, formato: "@" },
+      { aba: "Reservas", coluna: 8, formato: "@" }
+    ],
+    "uma aba com dados só pode ser reformatada nas colunas novas e vazias"
   );
   assert.equal(livro.folhas["Reservas"].dados.length, 2, "e nada lhe é acrescentado");
+});
+
+test("numa aba Reservas que já tem linhas, o quarto \"007\" sobrevive ao preparar()", () => {
+  // O mesmo bug do submissionID, uma coluna ao lado. O `quarto` e o `nome`
+  // ficaram presos na guarda do `getLastRow() <= 1`, e o argumento que a
+  // justifica — reformatar uma coluna cujas células JÁ foram coagidas a data
+  // não desfaz a coerção — não se aplica a colunas NOVAS e vazias: o
+  // setNumberFormat("@") não altera valor nenhum.
+  //
+  // Medido antes: numa folha que já tem linhas (a do dono, com as reservas de
+  // teste), a coluna ficava em "Automático" e o `confirmar` guardava o quarto
+  // "007" como o NÚMERO 7. Só afecta a apresentação — nada lê estas colunas —,
+  // mas o dono lê-as todas as manhãs.
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: CONFIGURADO, coagirComoSheets: true });
+  const gsComStub = carregarCom(livro.stubs);
+
+  gsComStub.preparar();
+
+  gsComStub.doPost({
+    parameter: webhook({
+      rawRequest: raw("2099-01-01 | 08:45-09:30", { q5_quarto: "007" })
+    }),
+    postData: { type: "application/x-www-form-urlencoded", contents: "formID=" + FORM_ID }
+  });
+
+  assert.equal(livro.folhas["Reservas"].dados[1][5], "007",
+    "o quarto tem de ficar como texto, não como o número 7");
 });
 
 test("numa aba Reservas que já tem linhas, o submissionID sobrevive ao preparar()", () => {
