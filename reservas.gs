@@ -888,13 +888,22 @@ function tituloDaColuna_(linhas, indice) {
 // perder mais nenhum: o String() de um double grande devolve a forma mais
 // curta que volta ao mesmo número (6437228876324828909 sai
 // "6437228876324829000", com o fim truncado a zeros), enquanto o toFixed(0)
-// devolve o inteiro exacto do double — em decimal, e nunca em notação
-// científica.
+// devolve o inteiro exacto do double, em decimal. (O toFixed(0) só passa a
+// notação científica a partir de 1e21; com 19 dígitos isso está fora de
+// alcance, mas não é a garantia universal que aqui já esteve escrita.)
+//
+// E o que isto NÃO garante, para ninguém contar com mais do que há: dois ids
+// diferentes só ficam garantidamente distintos enquanto pelo menos um dos
+// lados for TEXTO. Número contra número casa de propósito — é a mesma régua
+// dos dois lados — mas são dois valores já arredondados: nesta ordem de
+// grandeza o passo do double é 1024, e dois ids a menos de 1024 um do outro
+// caem no mesmo número e casam um com o outro sem serem o mesmo id. Quem
+// impede isso não é esta função, é a coluna `submissao` estar em texto simples
+// (ver o preparar()) e a `Submission ID` da aba das respostas também.
 //
 // Um id numérico que por isso não case com um id em texto não escreve NADA, e
 // essa é a direcção segura: escrever à mesma seria pôr a reserva de um hóspede
-// na linha de outro. É também por isso que o preparar() põe a coluna
-// `submissao` da aba Reservas em texto simples.
+// na linha de outro.
 function normalizarId_(v) {
   if (typeof v === "number") {
     if (!isFinite(v)) return "";

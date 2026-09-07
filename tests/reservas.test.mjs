@@ -1740,9 +1740,10 @@ test("uma data que o Sheets converteu não se propaga para a aba do dono", () =>
 });
 
 test("planoRespostas_ casa um id de 19 dígitos sem perder o último", () => {
-  // Se algum dos lados fosse coagido a double, os dois ids — que só diferem no
-  // último dígito — normalizariam para a MESMA string e a reserva da Ana
-  // aparecia na linha do Rui.
+  // Os dois ids diferem só no último dígito, e as duas pontas estão em TEXTO —
+  // é isso, e só isso, que os mantém distintos. Coagido a double, qualquer um
+  // dos lados normalizaria para a MESMA string (o passo do double nesta ordem
+  // de grandeza é 1024) e a reserva da Ana aparecia na linha do Rui.
   const submissoes = respostasFalsas([{ id: ID_RUI }]);
   assert.deepEqual(
     gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
@@ -1752,6 +1753,8 @@ test("planoRespostas_ casa um id de 19 dígitos sem perder o último", () => {
 });
 
 test("normalizarId_ nunca devolve notação científica nem encurta o id", () => {
+  // "Nunca" aqui é nesta gama: o toFixed(0) só passa a notação científica a
+  // partir de 1e21, e um submissionID tem 19 dígitos.
   const numero = 6437228876324828909;
 
   // O String() de um double grande devolve a forma mais CURTA que volta ao
@@ -1772,8 +1775,12 @@ test("normalizarId_ nunca devolve notação científica nem encurta o id", () =>
 test("planoRespostas_ casa o mesmo id quando as duas células vêm como número", () => {
   // Um id de 19 dígitos num campo NUMÉRICO já perdeu precisão dentro do
   // Sheets, antes de chegar aqui. O que se garante é que as duas pontas são
-  // lidas pela mesma régua: normalizadas em decimal, e nunca em notação
-  // científica, casam uma com a outra.
+  // lidas pela mesma régua: normalizadas em decimal, casam uma com a outra.
+  //
+  // E o que NÃO se garante: são dois valores já arredondados, com um passo de
+  // 1024 nesta ordem de grandeza, logo dois ids vizinhos podem casar sem serem
+  // o mesmo id. Quem impede isso é a coluna estar em texto simples, não esta
+  // comparação.
   const numero = 6437228876324828909;
   const reservas = [
     CAB,
