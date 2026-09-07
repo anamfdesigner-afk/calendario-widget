@@ -304,7 +304,16 @@ function marcaDe_(io) {
 // Ter os dois caminhos a chamar isto é deliberado: as guardas não podem
 // divergir, senão fechar um buraco num deles deixa-o aberto no outro.
 // Devolve quantas linhas expirou.
-function reconciliar_(io) {
+//
+// `excluirIndice` é a linha de quem está a pedir (-1 quando não há nenhuma).
+// O plano é calculado sobre TODO o registo, e a reconciliação casa por
+// contagens e não por identidade, pelo que a linha do próprio token pode
+// sair no plano — mesmo quando é ela que tem submissão. Sem esta exclusão,
+// um hóspede que tentasse trocar para um horário cheio recebia a recusa E
+// perdia a reserva que já tinha confirmada, contra o invariante que o
+// reservar_ documenta: a capacidade é verificada ANTES de libertar a
+// escolha anterior.
+function reconciliar_(io, excluirIndice) {
   var submissoes = io.lerSubmissoes();
   if (!submissoes || !submissoes.length) return 0;
 
@@ -314,9 +323,14 @@ function reconciliar_(io) {
   if (idx < 0) return 0;
   if (!submissoesFiaveis_(submissoes, idx, marcaDe_(io))) return 0;
 
-  var plano = planoReconciliacao_(
+  var bruto = planoReconciliacao_(
     io.lerReservas(), contarSubmissoes_(submissoes, idx), io.agora(), JANELA_ORFAS_MS
   );
+
+  var plano = [];
+  for (var i = 0; i < bruto.length; i++) {
+    if (bruto[i] !== excluirIndice) plano.push(bruto[i]);
+  }
   if (!plano.length) return 0;
 
   io.expirar(plano);
@@ -454,7 +468,7 @@ function reservar_(pedido, io) {
   if (!livre) {
     // Só aqui vale a pena ler a Form responses: é a única situação em que
     // reconciliar pode mudar a resposta. Mantém o caminho normal rápido.
-    if (reconciliar_(io)) {
+    if (reconciliar_(io, existente ? existente.indice : -1)) {
       linhas = io.lerReservas();
       livre = activos_(linhas, data, horario) < limite;
     }
@@ -558,7 +572,8 @@ function doGet(e) {
   var lock = LockService.getScriptLock();
   if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
     try {
-      reconciliar_(io);
+      // Ninguém a pedir um lugar: não há linha a proteger.
+      reconciliar_(io, -1);
     } catch (err) {
       // Reconciliar é oportunista: falhar aqui não deve impedir o GET.
     } finally {

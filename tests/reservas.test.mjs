@@ -402,6 +402,58 @@ test("reservar_ propaga os erros de validação", () => {
 });
 
 // ===============================
+// A RECONCILIAÇÃO NÃO PODE TOCAR NA RESERVA DE QUEM PEDE
+// ===============================
+
+test("uma troca recusada não pode revogar o lugar que o hóspede já tinha", () => {
+  const maisVelho = new Date(AGORA - 3 * 60 * 60 * 1000);
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      [PEDIDO.token, "2026-09-08", "08:00-08:45", maisVelho, "activo"],
+      ["x9", "2026-09-08", "08:00-08:45", velho, "activo"],
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes: [
+        ["Reserva"],
+        ["2026-09-08 | 08:00-08:45"],
+        ["2026-09-08 | 08:45-09:30"],
+        ["2026-09-08 | 08:45-09:30"]
+      ] }
+  );
+  // O plano é calculado sobre TODO o registo, logo inclui a linha de quem
+  // pede: no slot 08:00-08:45 há duas antigas e só uma submissão, e a mais
+  // antiga é a do próprio token. O pedido é para o 08:45-09:30, que está
+  // cheio e coberto pelas submissões — a recusa é correta, mas antes desta
+  // correção vinha acompanhada da expiração da reserva já confirmada do
+  // hóspede.
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
+  assert.deepEqual(estado.expiradas, [], "a reserva de quem pede tem de sobreviver à recusa");
+  assert.equal(estado.reservas[1][4], "activo");
+});
+
+test("reconciliar_ liberta as outras órfãs mas nunca o índice excluído", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["t1", "2026-09-08", "08:00-08:45", velho, "activo"],
+      ["t2", "2026-09-08", "08:00-08:45", velho, "activo"]
+    ],
+    { submissoes: [["Reserva"], ["2026-09-08 | 08:00-08:45"]] }
+  );
+  // Excedente 1, e a candidata é a linha 1 — excluída. Nada expira.
+  assert.equal(gs.reconciliar_(io, 1), 0);
+  assert.deepEqual(estado.expiradas, []);
+  // Sem exclusão, expira.
+  assert.equal(gs.reconciliar_(io, -1), 1);
+  assert.deepEqual(estado.expiradas, [1]);
+});
+
+// ===============================
 // FIABILIDADE DAS SUBMISSÕES (MARCA DE ÁGUA)
 // ===============================
 // A guarda do colunaReserva_ é ao nível da COLUNA: basta uma linha com
