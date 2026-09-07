@@ -57,24 +57,23 @@ sejam o mesmo.
 5. Volte à folha de cálculo. Deve ver duas abas novas em baixo:
    **Reservas** e **Capacidades**.
 
-### Confira a mensagem (importante)
+A aba **Reservas** tem sete colunas: `token`, `data`, `horario`, `criado`,
+`estado`, `quarto` e `nome`. As duas últimas são preenchidas sozinhas quando
+a reserva se concretiza — é aí que fica escrito **quem** tem cada horário, e
+é essa a lista que a cozinha lê de manhã.
+
+### Confira a mensagem
 
 Em baixo, no editor, abre-se o painel **Registo de execução**. Lá aparece
 uma linha assim:
 
 ```
-Abas prontas. Aba das respostas: Form responses. Reservas já existentes trazidas para o registo: 4
+Abas prontas. Último webhook recebido: NUNCA (enquanto for NUNCA, nenhum lugar é libertado).
 ```
 
-Duas coisas a confirmar nessa linha:
-
-- **A aba das respostas.** Tem de ser o nome da aba onde o formulário
-  grava as respostas dos hóspedes (é a que já lá estava). Se disser
-  **NENHUMA**, o programa não a encontrou — **avise-me antes de continuar**,
-  porque assim os lugares de reservas abandonadas nunca são libertados.
-- **As reservas já existentes.** É o número de reservas futuras que já
-  tinha no formulário e que o programa trouxe para a aba **Reservas**. Se
-  tinha reservas para os próximos dias, este número não deve ser `0`.
+Nesta altura **NUNCA** é o esperado: o aviso do formulário ainda não foi
+ligado (ponto 8). Depois desse ponto, correr o `preparar` outra vez deve
+mostrar aqui uma data — e é assim que se confirma que o aviso funciona.
 
 ## 6. Conferir as capacidades
 
@@ -137,20 +136,8 @@ que já existem.
 5. Copie o **URL da aplicação web**. É um endereço comprido que começa por
    `https://script.google.com/macros/s/...`.
 
-**Envie esse URL.** É a única coisa de que preciso para ligar o formulário.
-
-### Depois de eu ligar o formulário: corra o `semear` uma vez
-
-Entre o dia em que instala o programa e o dia em que eu ligo o formulário ao
-endereço novo podem passar dias. As reservas que os hóspedes fizerem nesse
-intervalo entram no formulário mas **não** ficam registadas na aba
-**Reservas** — e os lugares delas apareceriam livres, para serem vendidos
-outra vez.
-
-**Quando eu lhe disser que o formulário já está ligado, corra a função
-`semear` uma vez**, do mesmo modo que correu o `preparar` no ponto 5
-(escolher `semear` na caixa das funções → **Executar**). Demora segundos, e
-no painel **Registo de execução** aparece quantas reservas trouxe.
+**Envie esse URL.** É o que preciso para ligar o formulário. (A senha do
+ponto 8 é sua e **não** me deve ser enviada.)
 
 ### O que "Qualquer pessoa" quer dizer, exatamente
 
@@ -163,16 +150,124 @@ Três coisas que também deve saber, sem alarme:
 
 - **Quem tiver o endereço pode marcar reservas.** Não pode ler nada, mas
   pode ocupar lugares — em teoria, todos os lugares de um dia, sem
-  aparecer no formulário. Isso repara-se por si: uma reserva que não
-  chegue a ser submetida no formulário é libertada ao fim de 20 minutos.
+  aparecer no formulário. Isso repara-se por si: com o aviso do ponto 8
+  ligado, uma reserva que não chegue a ser submetida no formulário é
+  libertada ao fim de 20 minutos.
 - **O endereço vai ficar num repositório de código público**, porque é o
   formulário que precisa dele para funcionar. É por isso que o programa
   não devolve nada da folha.
 - **"Só responde com lugares livres" é uma garantia desta versão do
   programa.** Se o programa for alterado, a garantia é a da versão nova —
-  e é essa a razão de o ponto seguinte existir.
+  e é essa a razão de o ponto 10 existir.
 
-## 8. Se mais tarde alterar o programa
+## 8. Ligar o aviso de submissão (o passo mais importante)
+
+O programa marca o lugar quando o hóspede submete, mas sozinho **não fica a
+saber** se a submissão chegou mesmo ao fim. Quem lho diz é um aviso que o
+JotForm envia a cada formulário concluído.
+
+Enquanto este aviso não estiver ligado, o programa **não liberta lugar
+nenhum**: uma reserva começada e abandonada fica a ocupar lugar para sempre.
+É de propósito. Um lugar preso vê-se e corrige-se à mão; se o programa
+libertasse lugares sem nunca receber avisos, libertaria também os que foram
+mesmo vendidos, e o mesmo pequeno-almoço era vendido duas vezes, em silêncio.
+
+São duas metades — uma senha guardada no programa, e o aviso criado no
+formulário — e têm de levar a **mesma** senha. Faça-as por esta ordem.
+
+### 8.1 Escolher uma senha
+
+Invente uma senha só com letras, números e hífenes, sem espaços e sem
+acentos. Por exemplo: `pao-de-lo-com-mel-2026`. Guarde-a; não precisa de
+ma enviar.
+
+Serve para o programa saber que o aviso vem mesmo do seu formulário. O
+endereço do programa fica escrito num sítio público (é o formulário que
+precisa dele), e sem senha qualquer pessoa que o encontrasse podia mandar
+avisos falsos.
+
+### 8.2 Guardar a senha no programa
+
+1. No editor do Apps Script, clique na roda dentada (**Definições do
+   projeto**).
+2. Desça até **Propriedades do script** e clique em **Adicionar propriedade
+   do script**. Acrescente **duas**:
+
+| Propriedade | Valor |
+|---|---|
+| `segredoWebhook` | a senha que escolheu |
+| `formIdEsperado` | `253294429726062` |
+
+3. **Guardar propriedades do script.**
+
+O nome das propriedades tem de ser escrito exatamente assim, com as
+maiúsculas nos mesmos sítios. O segundo valor é o número do seu formulário —
+é o que aparece no endereço dele.
+
+### 8.3 Criar o aviso no JotForm
+
+1. Abra o formulário no JotForm.
+2. **Settings** (Definições) → **Integrations** (Integrações).
+3. Procure **WebHooks** na lista e escolha-o.
+4. No campo do endereço, cole o URL do ponto 7 seguido de `?k=` e da sua
+   senha, tudo junto e sem espaços:
+
+```
+https://script.google.com/macros/s/AKfy...../exec?k=pao-de-lo-com-mel-2026
+```
+
+5. **Complete Integration** (Completar integração).
+
+### 8.4 Confirmar que funciona (não salte isto)
+
+1. Faça uma reserva de teste no **link público** do formulário — nunca no
+   construtor.
+2. Abra a aba **Reservas**. Ao fim de alguns segundos, a linha da sua
+   reserva deve passar de `activo` para **`confirmado`**, e as colunas
+   `quarto` e `nome` devem ficar preenchidas.
+
+Se a linha ficar em `activo`, o aviso não está a chegar: quase sempre é a
+senha do ponto 8.1 escrita de maneira diferente nas duas metades. **Avise-me**
+— até isto funcionar, nenhum lugar abandonado é libertado.
+
+Para apagar a reserva de teste, mude o `estado` dessa linha para
+`expirado` (ver o Aviso no fim).
+
+## 9. Reservas que já existiam (uma única vez, à mão)
+
+Se no dia da mudança já houver reservas feitas para **hoje ou para os
+próximos dias**, o programa não tem como as descobrir sozinho: elas ficaram
+no formulário, e o campo que as devia ter copiado para a folha nunca chegou a
+funcionar. Sem as trazer para a aba **Reservas**, os lugares delas aparecem
+livres e podem ser vendidos outra vez.
+
+Enquanto forem poucas, escreva-as à mão. **Isto é a única vez em que deve
+escrever nessa aba**, e só linhas novas — ver o Aviso no fim, que continua a
+valer para tudo o resto.
+
+Uma linha por reserva, com as sete colunas por esta ordem:
+
+| token | data | horario | criado | estado | quarto | nome |
+|---|---|---|---|---|---|---|
+| `manual-1` | `2026-09-10` | `08:00-08:45` | (deixe vazio) | `confirmado` | `12` | `Ana Silva` |
+| `manual-2` | `2026-09-10` | `08:45-09:30` | (deixe vazio) | `confirmado` | `14` | `Rui Dias` |
+
+Quatro cuidados, todos com consequências:
+
+- **`estado` tem de ser `confirmado`**, escrito assim, em minúsculas. É essa
+  palavra que diz ao programa que a reserva é a valer e nunca pode ser
+  libertada. Com `activo`, o programa trata a linha como uma reserva
+  começada e não terminada, e liberta-lhe o lugar passados 20 minutos.
+- **A data é `AAAA-MM-DD`** — `2026-09-10`, nesta ordem, com os hífenes.
+- **O horário é igual ao da aba Capacidades**, letra por letra
+  (`08:00-08:45`).
+- **O `token` tem de ser diferente em cada linha.** `manual-1`, `manual-2`,
+  e assim por diante, serve perfeitamente.
+
+Só reservas de hoje em diante. As passadas já foram servidas e escrevê-las
+só bloquearia lugares que ninguém pode usar.
+
+## 10. Se mais tarde alterar o programa
 
 Alterar as capacidades **não** exige republicar: são lidas da folha a cada
 pedido.
@@ -191,22 +286,26 @@ aceites. Se lhe enviar uma versão assim, digo-lho.
 
 ## Aviso
 
-Não edite a aba **Reservas**. É o programa que a mantém. Há uma única
-exceção: se um hóspede cancelar a reserva por telefone, ou se a sua própria
-reserva de teste precisar ser cancelada, pode mudar a coluna `estado` dessa
-linha de `activo` para `expirado`. Isto liberta o lugar. A linha fica
-registada como prova.
+Não edite a aba **Reservas**. É o programa que a mantém. Há **duas** exceções,
+e só estas:
 
-Não faça nada mais: não acrescente linhas, não apague linhas, e não mude
-`token`, `data`, `horario` ou `criado`.
+- **Cancelar uma reserva.** Se um hóspede cancelar por telefone, ou se
+  quiser apagar uma reserva de teste, mude a coluna `estado` dessa linha
+  para `expirado`. Isto liberta o lugar, e a linha fica registada como prova.
+  Serve tanto para linhas `activo` como para linhas `confirmado`.
+- **As reservas antigas do ponto 9**, uma única vez, no dia da mudança.
 
-**Sobre `semear`:** existe uma função `semear` que faz só a parte do
-`preparar` que traz as reservas já existentes do formulário para a aba
-**Reservas**. Corre-se do mesmo modo. Não precisa dela na instalação — o
-`preparar` já a chama — e correr duas vezes não duplica nada nem desfaz
-cancelamentos. Precisa dela **uma vez** no dia em que eu ligar o formulário
-ao programa (está explicado no ponto 7), e pode voltar a correr sempre que
-eu lhe pedir. O mesmo vale para o `preparar`: repeti-lo não estraga nada.
+Não faça nada mais: não apague linhas, não acrescente linhas fora do ponto
+9, e não mude `token`, `data`, `horario` ou `criado`.
+
+As colunas `quarto` e `nome` são escritas pelo programa quando a reserva se
+concretiza. Pode lê-las à vontade — é para isso que existem — e corrigir um
+nome mal escrito não faz mal nenhum: o programa não as lê para contar
+lugares.
+
+**Sobre o `preparar`:** pode voltar a correr sempre que quiser. Não estraga
+nada, não duplica reservas, e depois do ponto 8 serve para confirmar, na
+linha do **Registo de execução**, que o aviso do formulário já chegou.
 
 **Sobre `limparTestes`:** Se correr a função `limparTestes` (do mesmo modo
 que correu o `preparar` no ponto 5), ela apaga apenas as linhas deixadas
