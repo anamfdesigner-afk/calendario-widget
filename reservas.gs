@@ -356,7 +356,12 @@ function validarPedido_(pedido, caps, hoje) {
 // inferência trazia consigo toda a espécie de modo de falha silencioso.
 // Agora não se infere: ou o webhook confirmou, ou não.
 //
-// Uma linha `confirmado` NUNCA é libertada. É uma reserva a valer.
+// A RECONCILIAÇÃO nunca liberta uma linha `confirmado`: é uma reserva a
+// valer, por muito antiga que seja. Não é o mesmo que dizer que uma linha
+// `confirmado` nunca é libertada — o reservar_ expira-a quando o MESMO token
+// troca de horário (só depois de garantir o novo lugar), e o dono pode
+// escrever `expirado` à mão para cancelar. O que nunca acontece é uma linha
+// confirmada ser libertada por decorrer o tempo.
 function planoReconciliacao_(reservas, agoraMs, janelaMs) {
   var expirar = [];
   for (var i = 1; i < (reservas || []).length; i++) {
@@ -494,14 +499,49 @@ function achatarValor_(v) {
   return partes.join(" ").trim();
 }
 
+// As chaves do rawRequest que NÃO são respostas do hóspede: metadados que a
+// JotForm mete no mesmo objeto. Sem esta lista, um `formName` casava
+// /nome|name/i e o registo da cozinha ficava com o título do formulário no
+// lugar do nome do hóspede.
+var CHAVES_NAO_RESPOSTA =
+  /^(slug|path|website|simple_spc|temp|event_?id|formID|formName|formTitle|timeToSubmit|validatedNewRequiredFieldIDs|submission_?id|type|q\d+_typeA\d+)$/i;
+
+// O nome da pergunta dentro de uma chave `q<número>_<nome>`. As respostas do
+// hóspede têm todas esta forma; os metadados não.
+function nomeDaChave_(chave) {
+  var m = String(chave).match(/^q\d+_(.+)$/);
+  return m ? m[1] : "";
+}
+
 // Procura um campo do rawRequest pelo NOME, de forma tolerante — a mesma
 // razão de sempre neste projeto: os nomes dos campos do JotForm mudam e um
 // nome que não casa falha em silêncio. Um valor que seja a própria reserva
 // nunca serve de quarto nem de nome.
+//
+// Em duas passagens: primeiro só as chaves com a forma de resposta
+// (`q<número>_<nome>`), comparando o padrão contra o NOME e não contra a
+// chave inteira; e só se nenhuma servir é que se aceita qualquer chave. Sem a
+// preferência, um campo escondido como `q2_formName` podia ganhar ao nome do
+// hóspede — a decisão ficava com a ordem das chaves, que é a JotForm que
+// escolhe.
 function campoPorNome_(campos, padrao) {
+  return campoEm_(campos, padrao, true) || campoEm_(campos, padrao, false);
+}
+
+function campoEm_(campos, padrao, soRespostas) {
   for (var k in campos) {
     if (!Object.prototype.hasOwnProperty.call(campos, k)) continue;
-    if (!padrao.test(String(k))) continue;
+    if (CHAVES_NAO_RESPOSTA.test(String(k))) continue;
+
+    var nome = nomeDaChave_(k);
+    if (soRespostas) {
+      if (!nome) continue;
+      if (CHAVES_NAO_RESPOSTA.test(nome)) continue;
+      if (!padrao.test(nome)) continue;
+    } else if (!padrao.test(String(k))) {
+      continue;
+    }
+
     var s = achatarValor_(campos[k]);
     if (!s) continue;
     if (FORMATO_RESERVA.test(s)) continue;
@@ -1067,8 +1107,24 @@ function preparar() {
 // colunas. As colunas são lidas por POSIÇÃO e não pelo nome, logo o script
 // funciona de qualquer maneira — mas o dono ficava sem saber o que são as
 // duas colunas novas que aparecem cheias de nomes de hóspedes.
+//
+// A guarda é sobre o CONTEÚDO da linha 1, não sobre o número de colunas. A
+// versão anterior saía cedo quando getLastColumn() >= 7, e numa aba antiga
+// bastava a primeira reserva (que já é escrita com sete valores) para o
+// getLastColumn passar a 7: os títulos `quarto` e `nome` nunca chegavam a ser
+// escritos, que é precisamente o caso para que isto existe.
+function cabecalhoCerto_(linha) {
+  for (var i = 0; i < CABECALHO_RESERVAS.length; i++) {
+    var celula = String((linha || [])[i] == null ? "" : (linha || [])[i]).trim();
+    if (celula !== CABECALHO_RESERVAS[i]) return false;
+  }
+  return true;
+}
+
 function garantirCabecalho_(aba) {
-  if (aba.getLastColumn() >= CABECALHO_RESERVAS.length) return;
+  var colunas = Math.max(aba.getLastColumn(), CABECALHO_RESERVAS.length);
+  var linha1 = aba.getRange(1, 1, 1, colunas).getValues()[0];
+  if (cabecalhoCerto_(linha1)) return;
   aba.getRange(1, 1, 1, CABECALHO_RESERVAS.length).setValues([CABECALHO_RESERVAS]);
 }
 
@@ -1078,8 +1134,11 @@ function preparar_() {
   garantirCabecalho_(reservas);
 
   // Texto simples nas colunas que o Sheets teria coagido — as duas datas
-  // (ver formatarTexto_) e o quarto, porque um quarto "007" virava 7. Mas SÓ
-  // enquanto a aba não tiver linhas de dados.
+  // (ver formatarTexto_), o quarto, porque um quarto "007" virava 7, e o nome,
+  // pela mesma razão: um hóspede chamado "7" é improvável, mas um nome que
+  // comece por "=" ou por "+" é lido pelo Sheets como fórmula e a célula
+  // devolve um erro em vez do nome. Mas SÓ enquanto a aba não tiver linhas de
+  // dados.
   //
   // A razão é uma versão anterior deste script, que deixava o appendRow
   // coagir as strings ISO em células de DATA. Reformatar essa coluna para
@@ -1105,6 +1164,7 @@ function preparar_() {
     formatarTexto_(reservas, COL_DATA);
     formatarTexto_(reservas, COL_CRIADO);
     formatarTexto_(reservas, COL_QUARTO);
+    formatarTexto_(reservas, COL_NOME);
   }
 
   var caps = folha_(ABA_CAPACIDADES, true);

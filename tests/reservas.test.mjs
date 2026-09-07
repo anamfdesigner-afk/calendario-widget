@@ -457,6 +457,27 @@ test("reservar_ troca de slot sem perder o lugar antigo antes de garantir o novo
   assert.equal(estado.acrescentadas.length, 1);
 });
 
+test("uma linha confirmada É libertada quando o mesmo token troca de horário", () => {
+  // "Uma linha `confirmado` nunca é libertada" vale para a RECONCILIAÇÃO, não
+  // para tudo: aqui é o próprio hóspede a mudar de ideias, e ficar com os dois
+  // lugares seria pior. O lugar novo é garantido primeiro; só depois se larga
+  // o antigo.
+  const { io, estado } = ioFalso([
+    CAB,
+    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "confirmado", "12", "Ana"]
+  ]);
+
+  const r = gs.reservar_(PEDIDO, io);
+
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "trocado" });
+  assert.deepEqual(estado.expiradas, [1]);
+  assert.equal(estado.reservas[1][4], "expirado");
+  assert.equal(estado.acrescentadas.length, 1);
+  assert.equal(estado.acrescentadas[0][4], "activo", "a nova espera pelo seu webhook");
+  assert.equal(gs.ocupados_(estado.reservas, "2026-09-08", "08:00-08:45"), 0, "um hóspede, um lugar");
+  assert.equal(gs.ocupados_(estado.reservas, "2026-09-08", "08:45-09:30"), 1);
+});
+
 test("reservar_ NÃO liberta o lugar antigo se o novo slot estiver cheio", () => {
   const { io, estado } = ioFalso([
     CAB,
@@ -746,6 +767,31 @@ test("achatarValor_ junta um nome partido em first e last", () => {
   assert.equal(gs.achatarValor_(12), "12");
   assert.equal(gs.achatarValor_(null), "");
   assert.equal(gs.achatarValor_({ first: "", last: "" }), "");
+});
+
+test("campoPorNome_ prefere as chaves com forma de resposta e ignora os metadados", () => {
+  // O rawRequest traz metadados no mesmo objeto. Um `formName` casa
+  // /nome|name/i, e sem esta preferência podia ganhar ao nome do hóspede — a
+  // decisão ficava com a ordem das chaves, que é a JotForm que escolhe.
+  const comMetadados = {
+    formName: "Breakfast at Montecarmo12",
+    q2_formName: "Breakfast at Montecarmo12",
+    slug: "submit/253294429726062",
+    q3_nome: { first: "Ana", last: "Silva" }
+  };
+  assert.equal(gs.campoPorNome_(comMetadados, /nome|name/i), "Ana Silva");
+
+  // E a ordem não decide: as mesmas chaves ao contrário dão o mesmo.
+  const aoContrario = {
+    q3_nome: { first: "Ana", last: "Silva" },
+    q2_formName: "Breakfast at Montecarmo12",
+    formName: "Breakfast at Montecarmo12"
+  };
+  assert.equal(gs.campoPorNome_(aoContrario, /nome|name/i), "Ana Silva");
+
+  // A segunda passagem continua a existir: uma chave sem a forma `q<n>_`
+  // ainda serve, se não houver nada melhor. É a tolerância de sempre.
+  assert.equal(gs.campoPorNome_({ quarto: "12" }, /quarto|room/i), "12");
 });
 
 test("campoPorNome_ é tolerante ao nome do campo e nunca devolve a reserva", () => {
@@ -1293,20 +1339,22 @@ test("criadoMs_ lê tanto a string ISO como um Date da folha", () => {
 
 const CAPS_FOLHA = [["horario", "vagas"], ["08:00-08:45", 3], ["08:45-09:30", 2]];
 
-test("preparar() põe as colunas data, criado e quarto em texto simples", () => {
+test("preparar() põe as colunas data, criado, quarto e nome em texto simples", () => {
   const livro = livroFalso({});
   const gsComStub = carregarCom(livro.stubs);
 
   gsComStub.preparar();
 
-  // COL_DATA = 1, COL_CRIADO = 3 e COL_QUARTO = 5 → colunas 2, 4 e 6 da
-  // folha, formato "@". O quarto entra na lista porque um quarto "007" seria
-  // coagido a 7.
+  // COL_DATA = 1, COL_CRIADO = 3, COL_QUARTO = 5 e COL_NOME = 6 → colunas 2,
+  // 4, 6 e 7 da folha, formato "@". O quarto entra porque um quarto "007"
+  // seria coagido a 7; o nome porque um nome começado por "=" ou "+" é lido
+  // como fórmula e a célula devolve um erro em vez do nome.
   const naReservas = livro.formatos.filter(f => f.aba === "Reservas");
   assert.deepEqual(naReservas, [
     { aba: "Reservas", coluna: 2, formato: "@" },
     { aba: "Reservas", coluna: 4, formato: "@" },
-    { aba: "Reservas", coluna: 6, formato: "@" }
+    { aba: "Reservas", coluna: 6, formato: "@" },
+    { aba: "Reservas", coluna: 7, formato: "@" }
   ]);
 });
 
@@ -1370,6 +1418,36 @@ test("preparar() acrescenta quarto e nome ao cabeçalho de uma folha antiga", ()
     ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo"],
     "as linhas de dados ficam intactas"
   );
+});
+
+test("preparar() escreve os títulos novos mesmo numa aba já com sete colunas", () => {
+  // A guarda anterior saía cedo quando getLastColumn() >= 7. Numa aba criada
+  // por uma versão antiga bastava a primeira reserva — que já é escrita com
+  // sete valores — para o getLastColumn passar a 7, e os títulos `quarto` e
+  // `nome` nunca chegavam a ser escritos: exactamente o caso que isto existe
+  // para tratar.
+  const livro = livroFalso({
+    Reservas: [
+      ["token", "data", "horario", "criado", "estado"],
+      ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo", "", ""]
+    ]
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.equal(livro.folhas["Reservas"].getLastColumn(), 7, "a aba já tem sete colunas");
+  gsComStub.preparar();
+
+  assert.deepEqual(livro.folhas["Reservas"].dados[0], CAB);
+});
+
+test("preparar() deixa em paz um cabeçalho que já está certo", () => {
+  const livro = livroFalso({ Reservas: [CAB, ["t1", "2099-01-01", "08:00-08:45", "x", "activo", "", ""]] });
+  const gsComStub = carregarCom(livro.stubs);
+
+  gsComStub.preparar();
+
+  assert.deepEqual(livro.folhas["Reservas"].dados[0], CAB);
+  assert.equal(livro.folhas["Reservas"].dados.length, 2);
 });
 
 test("preparar() diz se o webhook está configurado, sem imprimir o segredo", () => {
