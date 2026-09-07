@@ -1003,11 +1003,15 @@ function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
   return plano;
 }
 
-// Ponto de entrada único do espelho, partilhado pelo webhook e pelo GET — pela
-// mesma razão do reconciliar_: duas cópias das guardas acabam por divergir, e
-// fechar um buraco numa delas deixa-o aberto na outra. Devolve quantas células
-// PLANEOU escrever — o escreverRespostas ainda pode saltar alguma na
-// reconfirmação, e a passagem seguinte do GET volta a tratar dela.
+// Ponto de entrada único do espelho. Hoje só o doGet lhe chama — o caminho do
+// webhook foi retirado de propósito (ver o doPost) — mas as guardas ficam
+// todas aqui, pela mesma razão do reconciliar_: duas cópias acabam por
+// divergir, e fechar um buraco numa delas deixa-o aberto na outra.
+//
+// Devolve quantas células PLANEOU escrever — o escreverRespostas ainda pode
+// saltar alguma na reconfirmação, e a passagem seguinte do GET volta a tratar
+// dela. As `reservas` são um parâmetro para o doGet não ler a aba duas vezes;
+// sem elas, lê-as.
 function espelharRespostas_(io, reservas) {
   if (!io.lerRespostas || !io.escreverRespostas) return 0;
 
