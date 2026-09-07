@@ -36,9 +36,30 @@ var ESTADO_EXPIRADO = "expirado";
 
 var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
 
-// O valor que o widget grava, tal como aparece na submissão. Com grupos de
-// captura, porque é assim que o lemos de dentro do webhook.
+// O valor que o widget grava, tal como aparece na submissão. Este padrão é
+// SOLTO (casa no meio de um texto qualquer) e serve só para RECUSAR: um valor
+// com cara de reserva nunca serve de nome nem de quarto (ver campoPorNome_).
+// Para DECIDIR que lugar se confirma usa-se o ancorado abaixo.
 var FORMATO_RESERVA = /(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})/;
+
+// Este é o que decide, e é ANCORADO de propósito: o valor da chave tem de ser
+// uma reserva e mais NADA. Um `\d{4}-\d{2}-\d{2} | HH:MM-HH:MM` escondido no
+// meio de uma frase não nomeia lugar nenhum.
+var FORMATO_RESERVA_ANCORADO = /^\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})\s*$/;
+
+// Só para o último recurso: um corpo que não chega como objeto JSON. Com
+// fronteiras em vez de âncoras, que é o mais perto de ancorado que um texto
+// solto permite — a data não pode vir presa a outro dígito, nem o horário
+// continuar noutro.
+var FORMATO_RESERVA_TEXTO =
+  /(?:^|[^\d])(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})(?![\d:])/g;
+
+// As chaves do rawRequest que podem nomear um lugar. A primeira é a resposta
+// do PRÓPRIO widget; a segunda é a tolerância de sempre neste projeto, para o
+// dia em que a JotForm renomear o campo — e é a segunda escolha, nunca a
+// primeira.
+var CHAVE_RESERVA_WIDGET = /typeA137/i;
+var CHAVE_RESERVA_TOLERANTE = /reserva/i;
 
 // Chaves nas ScriptProperties. O segredo do webhook e o ID do formulário
 // vivem AQUI e nunca no ficheiro: este código está num repositório público,
@@ -392,19 +413,70 @@ function campoPorNome_(campos, padrao) {
 var NOME_CAMPO_QUARTO = /quarto|room/i;
 var NOME_CAMPO_NOME = /nome|name/i;
 
+// As reservas DISTINTAS escritas nas chaves cujo nome casa `padraoChave`.
+//
+// Distintas, e todas: a decisão de que lugar se confirma não pode depender da
+// ORDEM das chaves. A JotForm ordena o rawRequest pelo id da pergunta, logo
+// qualquer campo escrito pelo hóspede aparece ANTES do campo do widget — e um
+// `match` sobre o texto todo devolvia o primeiro, que era o do hóspede.
+function reservasNasChaves_(campos, padraoChave) {
+  var achadas = [];
+  for (var k in campos) {
+    if (!Object.prototype.hasOwnProperty.call(campos, k)) continue;
+    if (!padraoChave.test(String(k))) continue;
+    var m = achatarValor_(campos[k]).match(FORMATO_RESERVA_ANCORADO);
+    if (!m) continue;
+    var valor = m[1] + " | " + m[2];
+    if (achadas.indexOf(valor) < 0) achadas.push(valor);
+  }
+  return achadas;
+}
+
+// As reservas distintas de um corpo que não é um objeto JSON. Último recurso.
+// O `replace` em vez do `exec` é de propósito: um regex global guardado numa
+// constante do módulo leva lastIndex consigo entre chamadas, e um erro a meio
+// de um ciclo deixava-o apontado para o meio do texto seguinte.
+function reservasNoTexto_(texto) {
+  var achadas = [];
+  String(texto).replace(FORMATO_RESERVA_TEXTO, function (todo, data, horario) {
+    var valor = data + " | " + horario;
+    if (achadas.indexOf(valor) < 0) achadas.push(valor);
+    return todo;
+  });
+  return achadas;
+}
+
+// Uma reserva, ou nada. Duas reservas diferentes no mesmo sítio são uma
+// AMBIGUIDADE e recusam-se: escolher uma delas seria deixar a ordem decidir
+// que lugar se confirma, que é exatamente o buraco que isto fecha. Recusar
+// custa uma confirmação perdida (a linha fica `activo` e o lugar volta ao
+// mercado); escolher mal custa o lugar de outro hóspede, preso para sempre.
+function escolherReserva_(candidatas, onde) {
+  if (candidatas.length === 1) return candidatas[0];
+  if (candidatas.length > 1) {
+    console.log("Webhook ambíguo: encontrei " + candidatas.length +
+      " reservas diferentes " + onde + " (" + candidatas.join(" / ") +
+      "). Não confirmo nenhuma — a ordem dos campos não pode decidir que " +
+      "lugar se confirma.");
+  }
+  return "";
+}
+
 // Lê do rawRequest a reserva e a identidade. Devolve null quando não há
 // reserva legível — e nesse caso não se confirma nada: um POST sem reserva
 // não diz que lugar confirmar.
 //
-// A reserva é procurada no TEXTO todo e não numa chave: o campo do widget
-// chama-se q137_typeA137 hoje e pode chamar-se outra coisa amanhã, e o
-// formato AAAA-MM-DD | HH:MM-HH:MM é inconfundível.
+// A reserva vem do VALOR de uma chave, nunca do texto todo. A versão anterior
+// procurava o formato no rawRequest inteiro e ficava com a primeira ocorrência:
+// bastava um hóspede escrever `2026-12-25 | 08:00-08:45` na caixa do quarto
+// para o webhook — assinado pela JotForm, sem segredo nenhum pelo meio —
+// confirmar a linha de OUTRO hóspede naquele horário. E como uma linha
+// `confirmado` nunca é libertada pela reconciliação, repetir a manobra prendia
+// o horário todo, para sempre; a linha do próprio atacante ficava `activo` e o
+// lugar dele era revendido 20 minutos depois. Só a resposta do widget pode
+// nomear um lugar.
 function dadosDoWebhook_(bruto) {
   var texto = String(bruto == null ? "" : bruto);
-  var m = texto.match(FORMATO_RESERVA);
-  if (!m) return null;
-
-  var out = { data: m[1], horario: m[2], quarto: "", nome: "" };
 
   var campos = null;
   try {
@@ -412,7 +484,28 @@ function dadosDoWebhook_(bruto) {
   } catch (err) {
     campos = null;
   }
-  if (campos && typeof campos === "object") {
+  var temChaves = !!(campos && typeof campos === "object");
+
+  var valor;
+  if (temChaves) {
+    valor = escolherReserva_(
+      reservasNasChaves_(campos, CHAVE_RESERVA_WIDGET), "na resposta do widget");
+    // A chave tolerante só entra quando a do widget não existe: um campo do
+    // hóspede chamado "reserva" não pode passar à frente da resposta do widget.
+    if (!valor) {
+      valor = escolherReserva_(
+        reservasNasChaves_(campos, CHAVE_RESERVA_TOLERANTE),
+        "em chaves com 'reserva' no nome");
+    }
+  } else {
+    valor = escolherReserva_(reservasNoTexto_(texto),
+      "num corpo que não é um objeto JSON");
+  }
+  if (!valor) return null;
+
+  var m = valor.match(FORMATO_RESERVA_ANCORADO);
+  var out = { data: m[1], horario: m[2], quarto: "", nome: "" };
+  if (temChaves) {
     out.quarto = campoPorNome_(campos, NOME_CAMPO_QUARTO);
     out.nome = campoPorNome_(campos, NOME_CAMPO_NOME);
   }

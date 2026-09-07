@@ -569,6 +569,124 @@ test("dadosDoWebhook_ devolve null sem reserva legível", () => {
   assert.equal(gs.dadosDoWebhook_("2026-09-08"), null);
 });
 
+// ===============================
+// SÓ A RESPOSTA DO WIDGET PODE NOMEAR UM LUGAR
+// ===============================
+// A JotForm ordena o rawRequest pelo id da pergunta, logo qualquer campo
+// escrito pelo hóspede aparece ANTES do campo do widget. Enquanto a reserva
+// era procurada no texto todo (e o `match` sem /g devolve a primeira), bastava
+// escrever `2026-12-25 | 08:00-08:45` na caixa do quarto para o webhook —
+// assinado pela JotForm, sem segredo nenhum pelo meio — confirmar a linha de
+// OUTRO hóspede naquele horário, e uma linha `confirmado` não é libertada pela
+// reconciliação: o horário ficava preso para sempre.
+
+test("um campo do hóspede não pode nomear o lugar, e a ordem das chaves não decide", () => {
+  const hospedePrimeiro = JSON.stringify({
+    q3_nome: { first: "Ata", last: "Cante" },
+    q5_quarto: "2026-12-25 | 08:00-08:45",
+    q137_typeA137: "2026-09-08 | 08:45-09:30"
+  });
+  const widgetPrimeiro = JSON.stringify({
+    q137_typeA137: "2026-09-08 | 08:45-09:30",
+    q5_quarto: "2026-12-25 | 08:00-08:45",
+    q3_nome: { first: "Ata", last: "Cante" }
+  });
+
+  const esperado = { data: "2026-09-08", horario: "08:45-09:30", quarto: "", nome: "Ata Cante" };
+  assert.deepEqual(gs.dadosDoWebhook_(hospedePrimeiro), esperado);
+  assert.deepEqual(gs.dadosDoWebhook_(widgetPrimeiro), esperado);
+});
+
+test("o webhook do atacante confirma a linha DELE, nunca a da vítima", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    ["vitima", "2026-12-25", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""],
+    ["atacante", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 30 * 1000), "activo", "", ""]
+  ]);
+  const rawAtaque = JSON.stringify({
+    q3_nome: { first: "Ata", last: "Cante" },
+    q5_quarto: "2026-12-25 | 08:00-08:45",
+    q137_typeA137: "2026-09-08 | 08:45-09:30"
+  });
+
+  assert.deepEqual(gs.confirmarWebhook_(webhook({ rawRequest: rawAtaque }), io), {
+    ok: true, confirmado: true
+  });
+  assert.deepEqual(estado.confirmadas.map(c => c.indice), [2], "a linha do próprio atacante");
+  assert.equal(estado.reservas[1][4], "activo", "o lugar da vítima não pode ser tocado");
+  assert.equal(estado.reservas[1][6], "", "nem ganhar o nome de outra pessoa");
+});
+
+test("um campo do hóspede sozinho, sem a chave do widget, não confirma nada", () => {
+  assert.equal(gs.dadosDoWebhook_(JSON.stringify({ q5_quarto: "2026-12-25 | 08:00-08:45" })), null);
+
+  const { io, estado } = ioFalso([
+    CAB,
+    ["vitima", "2026-12-25", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
+  ]);
+  comRegisto(() => {
+    assert.deepEqual(
+      gs.confirmarWebhook_(webhook({
+        rawRequest: JSON.stringify({ q5_quarto: "2026-12-25 | 08:00-08:45" })
+      }), io),
+      { ok: false, erro: "reserva_ilegivel" }
+    );
+  });
+  assert.deepEqual(estado.confirmadas, []);
+  assert.equal(estado.reservas[1][4], "activo");
+});
+
+test("duas reservas diferentes em chaves de reserva não confirmam nenhuma", () => {
+  // Escolher uma delas seria deixar a ordem decidir. Recusar custa uma
+  // confirmação (a linha volta ao mercado ao fim de 20 minutos); escolher mal
+  // prende o lugar de outro hóspede para sempre.
+  const duas = JSON.stringify({
+    q9_reservaDoQuarto: "2026-12-25 | 08:00-08:45",
+    q137_typeA137: "2026-09-08 | 08:45-09:30"
+  });
+  // A chave do widget existe e é única: é ela que decide, e a outra é ignorada.
+  assert.deepEqual(gs.dadosDoWebhook_(duas), {
+    data: "2026-09-08", horario: "08:45-09:30", quarto: "", nome: ""
+  });
+
+  // Sem a chave do widget, duas chaves "reserva" com valores diferentes são
+  // ambíguas e não nomeiam lugar nenhum.
+  let r;
+  const registo = comRegisto(() => {
+    r = gs.dadosDoWebhook_(JSON.stringify({
+      q9_reservaA: "2026-12-25 | 08:00-08:45",
+      q10_reservaB: "2027-01-01 | 09:30-10:15"
+    }));
+  });
+  assert.equal(r, null);
+  assert.match(registo, /ambíguo/);
+});
+
+test("uma reserva escondida no meio de uma frase não nomeia lugar nenhum", () => {
+  // O valor da chave tem de ser uma reserva e mais NADA.
+  assert.equal(
+    gs.dadosDoWebhook_(JSON.stringify({
+      q137_typeA137: "quero 2026-09-08 | 08:45-09:30 se possível"
+    })),
+    null
+  );
+  // E o texto solto exige fronteiras: uma data presa a outro dígito não conta.
+  assert.equal(gs.dadosDoWebhook_("x12026-09-08 | 08:45-09:30"), null);
+});
+
+test("num corpo que não é JSON, duas reservas diferentes também são ambíguas", () => {
+  let r;
+  const registo = comRegisto(() => {
+    r = gs.dadosDoWebhook_("a=2026-12-25 | 08:00-08:45&b=2026-09-08 | 08:45-09:30");
+  });
+  assert.equal(r, null);
+  assert.match(registo, /não é um objeto JSON/);
+  // A mesma reserva repetida não é ambiguidade nenhuma.
+  assert.deepEqual(gs.dadosDoWebhook_("a=2026-09-08 | 08:45-09:30&b=2026-09-08 | 08:45-09:30"), {
+    data: "2026-09-08", horario: "08:45-09:30", quarto: "", nome: ""
+  });
+});
+
 const DUAS_ACTIVAS = [
   CAB,
   ["novo1", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""],
