@@ -210,9 +210,14 @@ const AGORA = new Date(2026, 8, 8, 12, 0, 0).getTime();
 const VELHO = new Date(AGORA - 60 * 60 * 1000);   // 1 hora: fora da janela
 const NOVO = new Date(AGORA - 60 * 1000);         // 1 minuto: dentro da janela
 
-// Prova de que o webhook já funcionou alguma vez. Sem isto a reconciliação
-// não corre — é a guarda central desta versão.
-const WEBHOOK_JA_CHEGOU = "2026-09-08T09:00:00.000Z";
+// Prova de que o webhook funciona: chegou há um minuto. Sem isto a
+// reconciliação não corre — é a guarda central desta versão.
+//
+// RELATIVO ao AGORA de propósito. Com uma data fixa em UTC, a distância até ao
+// AGORA (que é meio-dia LOCAL) mudava com o fuso da máquina, e a guarda do
+// canal mudo — marca com mais de duas horas e reservas por confirmar mais
+// novas do que ela — disparava em São Paulo e não disparava em Lisboa.
+const WEBHOOK_JA_CHEGOU = gs.criadoIso_(AGORA - 60 * 1000);
 
 // ===============================
 // RECONCILIAÇÃO: UMA ÓRFÃ É UMA ACTIVA VELHA
@@ -532,6 +537,110 @@ test("a mesma activa velha é libertada depois de chegar um webhook", () => {
   const depois = ioFalso(reservas, { ultimoWebhook: WEBHOOK_JA_CHEGOU });
   assert.equal(gs.reconciliar_(depois.io, -1), 2);
   assert.deepEqual(depois.estado.expiradas, [1, 2]);
+});
+
+// ===============================
+// A GUARDA VOLTA A SER EXAMINADA, NÃO É UM TRINCO DE UMA VEZ SÓ
+// ===============================
+// A versão anterior olhava só para a marca ser não-vazia. Bastava a instalação
+// ter funcionado um dia: se depois disso a integração fosse apagada,
+// desativada, ou o URL ou o segredo editados na JotForm, nada voltava a ser
+// confirmado, a marca ficava lá, a reconciliação ficava ARMADA — e todas as
+// reservas feitas a partir daí eram libertadas aos 20 minutos e revendidas,
+// em silêncio, para o resto da vida da implantação.
+
+const TRES_HORAS = 3 * 60 * 60 * 1000;
+
+test("nada é libertado quando as reservas chegam e as confirmações não", () => {
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["real1", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 30 * 60 * 1000), "activo", "", ""],
+      ["real2", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 25 * 60 * 1000), "activo", "", ""]
+    ],
+    { ultimoWebhook: gs.criadoIso_(AGORA - TRES_HORAS) }
+  );
+
+  const registo = comRegisto(() => assert.equal(gs.reconciliar_(io, -1), 0));
+
+  assert.deepEqual(estado.expiradas, [], "estas duas reservas foram mesmo vendidas");
+  assert.equal(estado.reservas[1][4], "activo");
+  assert.equal(estado.reservas[2][4], "activo");
+  assert.match(registo, /As reservas estão a chegar e as confirmações não/);
+});
+
+test("uma marca velha sem reservas feitas depois dela ainda reconcilia", () => {
+  // Estar calado não é sintoma nenhum: de noite não há submissões. O sintoma
+  // é haver reservas por confirmar mais novas do que a última confirmação.
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["antiga", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 5 * 60 * 60 * 1000), "activo", "", ""]
+    ],
+    { ultimoWebhook: gs.criadoIso_(AGORA - TRES_HORAS) }
+  );
+
+  assert.equal(gs.reconciliar_(io, -1), 1);
+  assert.deepEqual(estado.expiradas, [1]);
+});
+
+test("webhookEmudeceu_ mede a marca contra o limite e contra as linhas activas", () => {
+  const activaNova = [
+    CAB,
+    ["nova", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
+  ];
+  const io = marca => ({ ultimoWebhook: () => marca });
+
+  // Duas horas: o limite. Dentro dele o canal ainda conta como vivo.
+  const limite = 2 * 60 * 60 * 1000;
+  assert.equal(
+    gs.webhookEmudeceu_(io(gs.criadoIso_(AGORA - limite)), activaNova, AGORA),
+    false, "no limite ainda não emudeceu"
+  );
+  assert.equal(
+    gs.webhookEmudeceu_(io(gs.criadoIso_(AGORA - limite - 1000)), activaNova, AGORA),
+    true
+  );
+  // Sem linhas activas mais novas do que a marca, não há sintoma.
+  const soConfirmadas = [
+    CAB,
+    ["feita", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "confirmado", "12", "Ana"]
+  ];
+  assert.equal(gs.webhookEmudeceu_(io(gs.criadoIso_(AGORA - TRES_HORAS)), soConfirmadas, AGORA), false);
+  // Uma marca ilegível (propriedade editada à mão) não é deste guarda.
+  assert.equal(gs.webhookEmudeceu_(io("ontem à tarde"), activaNova, AGORA), false);
+  assert.equal(gs.webhookEmudeceu_({}, activaNova, AGORA), false);
+});
+
+test("doGet também para de libertar quando o canal emudece", () => {
+  // As duas guardas vivem no reconciliar_ de propósito: se divergissem,
+  // fechar o buraco num caminho deixava-o aberto no outro.
+  const agora = Date.now();
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["real1", "2099-01-01", "08:45-09:30", gs.criadoIso_(agora - 30 * 60 * 1000), "activo", "", ""],
+      ["real2", "2099-01-01", "08:45-09:30", gs.criadoIso_(agora - 25 * 60 * 1000), "activo", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA
+  }, {
+    propriedades: {
+      segredoWebhook: SEGREDO,
+      formIdEsperado: FORM_ID,
+      ultimoWebhook: gs.criadoIso_(agora - TRES_HORAS)
+    }
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => {
+    r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+  });
+
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+  assert.equal(livro.folhas["Reservas"].dados[2][4], "activo");
+  assert.equal(r.slots[1].restantes, 0);
+  assert.match(registo, /As reservas estão a chegar e as confirmações não/);
 });
 
 test("reconciliar_ liberta as outras órfãs mas nunca o índice excluído", () => {
@@ -1004,10 +1113,14 @@ const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 // Propriedades de uma instalação já a funcionar: webhook configurado e já
 // recebido pelo menos uma vez.
+// Estes testes medem o tempo pelo relógio real (Date.now()) e não pelo AGORA,
+// por isso a marca também é relativa a ele: uma data fixa acabaria por ficar
+// com mais de duas horas e desarmava a reconciliação sozinha, um dia
+// qualquer, sem nada ter mudado no código.
 const CONFIGURADO = {
   segredoWebhook: SEGREDO,
   formIdEsperado: FORM_ID,
-  ultimoWebhook: WEBHOOK_JA_CHEGOU
+  ultimoWebhook: gs.criadoIso_(Date.now() - 60 * 1000)
 };
 
 // ===============================
@@ -1116,7 +1229,7 @@ test("preparar() diz se o webhook está configurado, sem imprimir o segredo", ()
   assert.match(msg, /Segredo do webhook: definido/);
   assert.doesNotMatch(msg, new RegExp(SEGREDO), "o registo é copiável e vai para capturas de ecrã");
   assert.match(msg, new RegExp("Formulário esperado: " + FORM_ID));
-  assert.match(msg, /Último webhook recebido: 2026-09-08T09/);
+  assert.match(msg, /Último webhook recebido: \d{4}-\d{2}-\d{2}T\d{2}:/);
 });
 
 test("preparar() avisa quando falta a configuração do webhook", () => {

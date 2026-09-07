@@ -74,6 +74,13 @@ var CHAVE_ULTIMO_WEBHOOK = "ultimoWebhook";
 // `confirmado`.
 var JANELA_ORFAS_MS = 20 * 60 * 1000;
 
+// Quanto tempo o canal do webhook pode estar CALADO antes de deixarmos de
+// confiar nele (ver webhookEmudeceu_). Seis janelas de órfãs: folgado o
+// suficiente para uma manhã sem submissões nenhumas não desarmar a
+// reconciliação, e curto o suficiente para uma integração apagada não passar
+// um dia inteiro a revender lugares vendidos.
+var LIMITE_WEBHOOK_MUDO_MS = 6 * JANELA_ORFAS_MS;
+
 // ATENÇÃO: acoplado ao ORCAMENTO_RESERVA_MS do widget.js (5 s por
 // tentativa). Tem de ficar CONFORTAVELMENTE DENTRO desse orçamento. Com os
 // 20 s que aqui estavam, sob contenção o widget desistia e falhava fechado
@@ -347,6 +354,37 @@ function primeiroWebhookChegou_(io) {
   return !!(v && String(v).trim());
 }
 
+// E continua a chegar? A guarda de cima olhava só para a marca ser não-vazia,
+// uma vez, e nunca a comparava com nada. Bastava a instalação ter funcionado
+// um dia: se depois disso a integração fosse apagada, desativada, ou o URL ou
+// o segredo editados na JotForm, nada voltava a ser confirmado, mas a marca
+// ficava lá e a reconciliação ficava ARMADA — e todas as reservas feitas a
+// partir daí eram libertadas aos 20 minutos e os lugares revendidos, em
+// silêncio, para o resto da vida da implantação. Era exactamente a falha que
+// a guarda existia para impedir, coberta só na variante "nunca funcionou".
+//
+// Estar calado, por si, não é sintoma nenhum — de noite não há submissões. O
+// sintoma é "as reservas chegam mas as confirmações não": marca velha E linhas
+// `activo` criadas DEPOIS dela. Nesse caso não se liberta nada, e diz-se
+// porquê no registo, como no caso do webhook que nunca chegou.
+function webhookEmudeceu_(io, reservas, agoraMs) {
+  if (!io.ultimoWebhook) return false;
+  var marca = criadoMs_(io.ultimoWebhook());
+  // Marca ilegível (uma propriedade editada à mão): não é a este guarda que
+  // compete decidir. O primeiroWebhookChegou_ já a aceitou como prova.
+  if (!isFinite(marca)) return false;
+  if (agoraMs - marca <= LIMITE_WEBHOOK_MUDO_MS) return false;
+
+  for (var i = 1; i < (reservas || []).length; i++) {
+    var l = reservas[i] || [];
+    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+    var criado = criadoMs_(l[COL_CRIADO]);
+    if (!isFinite(criado)) continue;
+    if (criado > marca) return true;
+  }
+  return false;
+}
+
 // Ponto de entrada único da reconciliação, partilhado pelo POST e pelo GET.
 // Ter os dois caminhos a chamar isto é deliberado: as guardas não podem
 // divergir, senão fechar um buraco num deles deixa-o aberto no outro.
@@ -372,7 +410,19 @@ function reconciliar_(io, excluirIndice) {
     return 0;
   }
 
-  var bruto = planoReconciliacao_(io.lerReservas(), io.agora(), JANELA_ORFAS_MS);
+  var reservas = io.lerReservas();
+  var agora = io.agora();
+
+  if (webhookEmudeceu_(io, reservas, agora)) {
+    console.log("Reconciliação não corre: o último webhook da JotForm tem " +
+      "mais de " + Math.round(LIMITE_WEBHOOK_MUDO_MS / 60000) + " minutos e " +
+      "há reservas feitas depois dele ainda por confirmar. As reservas estão a " +
+      "chegar e as confirmações não — libertar lugares agora era revender " +
+      "lugares vendidos. Confirme a integração e o segredo (ver preparar()).");
+    return 0;
+  }
+
+  var bruto = planoReconciliacao_(reservas, agora, JANELA_ORFAS_MS);
 
   var plano = [];
   for (var i = 0; i < bruto.length; i++) {
@@ -1033,6 +1083,7 @@ if (typeof module !== "undefined") {
     validarPedido_: validarPedido_,
     planoReconciliacao_: planoReconciliacao_,
     primeiroWebhookChegou_: primeiroWebhookChegou_,
+    webhookEmudeceu_: webhookEmudeceu_,
     reconciliar_: reconciliar_,
     achatarValor_: achatarValor_,
     campoPorNome_: campoPorNome_,
