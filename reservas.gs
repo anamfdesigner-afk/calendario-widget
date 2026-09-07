@@ -1006,6 +1006,17 @@ function espelharRespostas_(io, reservas) {
   if (!temSubmissaoGuardada_(linhas)) return 0;
 
   var submissoes = io.lerRespostas();
+  if (!submissoes) {
+    // A ABA não existe — coisa diferente de faltarem colunas nela. Antes, uma
+    // aba renomeada dava exactamente a mesma queixa das colunas em falta, e
+    // mandava o dono procurar cabeçalhos que estão lá, intactos.
+    console.log("Espelho desligado: não há nenhuma aba chamada \"" +
+      ABA_RESPOSTAS + "\" (a integração do JotForm ainda não a criou, ou a aba " +
+      "mudou de nome). A reserva não aparece ao lado do menu; as reservas e os " +
+      "lugares não são afectados.");
+    return 0;
+  }
+
   var idxId = colunaSubmissao_(submissoes);
   var idxDestino = colunaDestino_(submissoes);
   if (idxId < 0 || idxDestino < 0) {
@@ -1118,10 +1129,13 @@ function ioReal_() {
       return (linhas && linhas.length) ? linhas : [CABECALHO_RESERVAS];
     },
     lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
-    // A aba das respostas pode não existir (uma folha nova, ou a integração
-    // do JotForm ainda por ligar). Aí devolve [] e o espelho fica desligado
-    // — sem coluna nenhuma, não há onde escrever.
-    lerRespostas: function () { return lerTudo_(ABA_RESPOSTAS) || []; },
+    // A aba das respostas pode não existir (uma folha nova, a integração do
+    // JotForm ainda por ligar, ou a aba renomeada). Aí devolve NULL, e não
+    // []: são coisas diferentes e o dono precisa de as distinguir. Um []
+    // quer dizer "a aba está lá e não tem cabeçalho"; um null quer dizer "não
+    // há aba nenhuma com este nome" — e mandá-lo procurar colunas quando o
+    // que falta é a aba é fazê-lo perder a tarde no sítio errado.
+    lerRespostas: function () { return lerTudo_(ABA_RESPOSTAS); },
     escreverRespostas: function (plano) {
       // `false`: se a aba não existir, NÃO se cria. Uma aba nossa com este
       // nome faria a integração do JotForm criar outra ao lado, e o dono
@@ -1522,16 +1536,28 @@ function preparar_() {
   // ficava à espera de valores que nunca apareciam — foi assim que o espelho
   // do JotForm passou meses partido sem ninguém dar por isso.
   var respostas = io.lerRespostas();
-  var idId = colunaSubmissao_(respostas);
-  var idDestino = colunaDestino_(respostas);
-  var espelho = ". Coluna do ID: " +
-    (idId < 0 ? "EM FALTA" : "\"" + tituloDaColuna_(respostas, idId) + "\"") +
-    ". Coluna da reserva: " +
-    (idDestino < 0 ? "EM FALTA" : "\"" + tituloDaColuna_(respostas, idDestino) + "\"") +
-    (idId < 0 || idDestino < 0
-      ? " (enquanto houver EM FALTA, a reserva não aparece na aba \"" +
-        ABA_RESPOSTAS + "\"; as reservas e os lugares não são afectados)"
-      : "");
+  var espelho;
+  if (!respostas) {
+    // A ABA não existe. Dizê-lo por palavras é o ponto: enquanto isto
+    // reportava as colunas, uma aba renomeada saía como "Coluna do ID: EM
+    // FALTA. Coluna da reserva: EM FALTA" e mandava o dono procurar
+    // cabeçalhos que estão lá, intactos, na aba com o outro nome.
+    espelho = ". Aba \"" + ABA_RESPOSTAS + "\": EM FALTA (a integração do " +
+      "JotForm ainda não a criou, ou a aba mudou de nome; enquanto faltar, a " +
+      "reserva não aparece ao lado do menu — as reservas e os lugares não são " +
+      "afectados)";
+  } else {
+    var idId = colunaSubmissao_(respostas);
+    var idDestino = colunaDestino_(respostas);
+    espelho = ". Coluna do ID: " +
+      (idId < 0 ? "EM FALTA" : "\"" + tituloDaColuna_(respostas, idId) + "\"") +
+      ". Coluna da reserva: " +
+      (idDestino < 0 ? "EM FALTA" : "\"" + tituloDaColuna_(respostas, idDestino) + "\"") +
+      (idId < 0 || idDestino < 0
+        ? " (enquanto houver EM FALTA, a reserva não aparece na aba \"" +
+          ABA_RESPOSTAS + "\"; as reservas e os lugares não são afectados)"
+        : "");
+  }
 
   return "Abas prontas. Segredo do webhook: " +
     (io.segredo() ? "definido" : "EM FALTA") +

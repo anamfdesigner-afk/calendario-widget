@@ -84,6 +84,16 @@ disser `EM FALTA`, essa escrita fica desligada: **a reserva não aparece na aba
 das respostas**. As reservas e os lugares não são afectados — o formulário
 continua a funcionar na mesma e a aba **Reservas** continua completa.
 
+Se a aba das respostas ainda não existir — a integração do formulário com a
+folha é que a cria — a mensagem diz isso mesmo, em vez de falar de colunas:
+
+```
+… Aba "Form responses": EM FALTA (a integração do JotForm ainda não a criou, ou a aba mudou de nome; enquanto faltar, a reserva não aparece ao lado do menu — as reservas e os lugares não são afectados).
+```
+
+É a mesma mensagem que aparece se alguém **mudar o nome** à aba das respostas:
+o programa procura-a por `Form responses`.
+
 Depois do ponto 8, correr o `preparar` outra vez deve mostrar
 `Segredo do webhook: definido`, o número do formulário, uma data em vez de
 `NUNCA`, e as duas colunas com nome (algo como `Coluna do ID: "Submission ID".

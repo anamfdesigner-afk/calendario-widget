@@ -312,8 +312,9 @@ function ioFalso(reservas, opcoes = {}) {
     expiradas: [],
     confirmadas: [],
     // A aba das respostas, tal como a integração do JotForm a mantém: o
-    // cabeçalho na linha 1 e uma linha por submissão. Por omissão não existe.
-    respostas: (opcoes.respostas || []).map(l => l.slice()),
+    // cabeçalho na linha 1 e uma linha por submissão. Por omissão não existe —
+    // e "não existe" é NULL, não uma aba vazia: são queixas diferentes.
+    respostas: opcoes.respostas ? opcoes.respostas.map(l => l.slice()) : null,
     escritasRespostas: [],
     // Por omissão NUNCA chegou webhook nenhum: é o estado de uma instalação
     // nova, e é ele que trava a reconciliação.
@@ -1867,12 +1868,6 @@ test("preparar() nomeia as duas colunas da aba das respostas", () => {
 test("preparar() diz EM FALTA quando alguma das colunas não existe", () => {
   // A funcionalidade fica desligada, e o dono TEM de o saber: um espelho
   // partido em silêncio já custou meses a este projeto.
-  const semAba = livroFalso({}, { propriedades: CONFIGURADO });
-  const msgSemAba = carregarCom(semAba.stubs).preparar();
-  assert.match(msgSemAba, /Coluna do ID: EM FALTA/);
-  assert.match(msgSemAba, /Coluna da reserva: EM FALTA/);
-  assert.match(msgSemAba, /a reserva não aparece na aba "Form responses"/);
-  assert.match(msgSemAba, /as reservas e os lugares não são afectados/);
 
   // Só uma em falta chega para desligar tudo.
   const semDestino = livroFalso(
@@ -1881,6 +1876,28 @@ test("preparar() diz EM FALTA quando alguma das colunas não existe", () => {
   assert.match(msgSemDestino, /Coluna do ID: "Submission ID"/);
   assert.match(msgSemDestino, /Coluna da reserva: EM FALTA/);
   assert.match(msgSemDestino, /a reserva não aparece na aba/);
+});
+
+test("uma aba renomeada é reportada como aba, e não como colunas em falta", () => {
+  // O `lerRespostas` devolvia [] tanto para uma aba inexistente como para uma
+  // aba sem cabeçalho, e os dois índices saíam a -1: o dono era mandado
+  // procurar colunas que estão lá, intactas, na aba com o outro nome.
+  const semAba = livroFalso({}, { propriedades: CONFIGURADO });
+  const msgSemAba = carregarCom(semAba.stubs).preparar();
+  assert.match(msgSemAba, /Aba "Form responses": EM FALTA/);
+  assert.doesNotMatch(msgSemAba, /Coluna do ID/, "as colunas não são o problema");
+  assert.doesNotMatch(msgSemAba, /Coluna da reserva/);
+  assert.match(msgSemAba, /mudou de nome/);
+  assert.match(msgSemAba, /as reservas e os lugares não são afectados/);
+
+  // E o mesmo no registo, quando já há reservas por espelhar: quem lê o
+  // registo de execução tem de ver a aba, não as colunas.
+  const { io } = ioFalso(reservasComSubmissao());
+  let escreveu;
+  const registo = comRegisto(() => { escreveu = gs.espelharRespostas_(io); });
+  assert.equal(escreveu, 0);
+  assert.match(registo, /não há nenhuma aba chamada "Form responses"/);
+  assert.doesNotMatch(registo, /falta a coluna/);
 });
 
 test("preparar() diz se o webhook está configurado, sem imprimir o segredo", () => {
