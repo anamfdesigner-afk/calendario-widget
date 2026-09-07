@@ -186,8 +186,8 @@ Não faça nada mais: não acrescente linhas, não apague linhas, e não mude
 eu lhe pedir.
 
 **Sobre `limparTestes`:** Se correr a função `limparTestes` (do mesmo modo
-que correu o `preparar` no ponto 5),
-ela apaga apenas as linhas deixadas pelo teste de carga do programador — as
+que correu o `preparar` no ponto 5), ela apaga apenas as linhas deixadas
+pelo teste de carga do programador — as
 que têm `token` a começar por `conc-teste-`. Se tiver feito uma reserva real
 através do formulário para testar se funciona, essa reserva tem um `token`
 normal e `limparTestes` não a apaga. Use a solução acima: mude o `estado`
