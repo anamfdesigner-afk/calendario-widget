@@ -1504,6 +1504,86 @@ test("preparar() deixa em paz um cabeçalho que já está certo", () => {
   assert.equal(livro.folhas["Reservas"].dados.length, 2);
 });
 
+// ===============================
+// AS DUAS COLUNAS DA ABA DAS RESPOSTAS
+// ===============================
+// Descobertas pelo CABEÇALHO, nunca pela posição: uma coluna acertada por
+// posição continua a escrever depois de a folha mudar, só que na célula
+// errada — e aqui a célula errada é a resposta de um hóspede.
+
+// O cabeçalho real: 23 colunas (A..W), o `typeA137` em D e o `Submission ID`
+// em V. A coluna A chama-se "Submission Date" de propósito, para provar que o
+// padrão do id não a apanha.
+const CAB_RESPOSTAS = [
+  "Submission Date", "Nome", "Email", "typeA137", "Quarto",
+  "Sumo", "Fruta", "Pão", "Ovos", "Iogurte",
+  "Bebida quente", "Cereais", "Doce", "Queijo", "Fiambre",
+  "Manteiga", "Mel", "Bolo", "Notas", "Alergias",
+  "Hora de chegada", "Submission ID", "Edit Link"
+];
+
+test("colunaSubmissao_ encontra a coluna do id pelo cabeçalho", () => {
+  assert.equal(gs.colunaSubmissao_([CAB_RESPOSTAS]), 21, "coluna V");
+  // A JotForm já escreveu este título de mais do que uma maneira, e o dono
+  // pode reordenar as colunas à vontade — o que não pode é o script deixar de
+  // as encontrar em silêncio.
+  assert.equal(gs.colunaSubmissao_([["a", "submission id"]]), 1);
+  assert.equal(gs.colunaSubmissao_([["a", "  SubmissionID  "]]), 1);
+  assert.equal(gs.colunaSubmissao_([["Submission Date", "Nome"]]), -1,
+    "'Submission Date' não é o id");
+});
+
+test("colunaDestino_ encontra a coluna da reserva pelo cabeçalho", () => {
+  assert.equal(gs.colunaDestino_([CAB_RESPOSTAS]), 3, "coluna D");
+  assert.equal(gs.colunaDestino_([["a", "Reserva"]]), 1, "o nome tolerante de sempre");
+  assert.equal(gs.colunaDestino_([["a", "q137_typeA137"]]), 1);
+});
+
+test("sem coluna, as duas devolvem -1 em vez de adivinharem uma posição", () => {
+  // É este -1 que DESLIGA a funcionalidade. Adivinhar seria escrever por cima
+  // de respostas de hóspedes.
+  assert.equal(gs.colunaSubmissao_([["Nome", "Email"]]), -1);
+  assert.equal(gs.colunaDestino_([["Nome", "Email"]]), -1);
+  assert.equal(gs.colunaSubmissao_([]), -1, "aba inexistente");
+  assert.equal(gs.colunaDestino_([]), -1);
+  assert.equal(gs.colunaSubmissao_([["", "", ""]]), -1, "cabeçalho em branco");
+});
+
+test("preparar() nomeia as duas colunas da aba das respostas", () => {
+  const livro = livroFalso(
+    { "Form responses": [CAB_RESPOSTAS] }, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const msg = gsComStub.preparar();
+
+  assert.match(msg, /Coluna do ID: "Submission ID"/);
+  assert.match(msg, /Coluna da reserva: "typeA137"/);
+  assert.doesNotMatch(msg, /EM FALTA/);
+  assert.deepEqual(
+    livro.folhas["Form responses"].dados, [CAB_RESPOSTAS],
+    "o preparar() lê a aba das respostas e não lhe toca"
+  );
+});
+
+test("preparar() diz EM FALTA quando alguma das colunas não existe", () => {
+  // A funcionalidade fica desligada, e o dono TEM de o saber: um espelho
+  // partido em silêncio já custou meses a este projeto.
+  const semAba = livroFalso({}, { propriedades: CONFIGURADO });
+  const msgSemAba = carregarCom(semAba.stubs).preparar();
+  assert.match(msgSemAba, /Coluna do ID: EM FALTA/);
+  assert.match(msgSemAba, /Coluna da reserva: EM FALTA/);
+  assert.match(msgSemAba, /a reserva não aparece na aba "Form responses"/);
+  assert.match(msgSemAba, /as reservas e os lugares não são afectados/);
+
+  // Só uma em falta chega para desligar tudo.
+  const semDestino = livroFalso(
+    { "Form responses": [["Nome", "Submission ID"]] }, { propriedades: CONFIGURADO });
+  const msgSemDestino = carregarCom(semDestino.stubs).preparar();
+  assert.match(msgSemDestino, /Coluna do ID: "Submission ID"/);
+  assert.match(msgSemDestino, /Coluna da reserva: EM FALTA/);
+  assert.match(msgSemDestino, /a reserva não aparece na aba/);
+});
+
 test("preparar() diz se o webhook está configurado, sem imprimir o segredo", () => {
   const livro = livroFalso({}, { propriedades: CONFIGURADO });
   const gsComStub = carregarCom(livro.stubs);

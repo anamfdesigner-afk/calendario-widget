@@ -15,6 +15,14 @@
 var ABA_RESERVAS = "Reservas";
 var ABA_CAPACIDADES = "Capacidades";
 
+// A aba das respostas do JotForm. Ao contrário das outras duas, esta NÃO é
+// nossa: é a integração do Google Sheets que a cria, ordena e enche. A única
+// coisa que aqui se faz é preencher células VAZIAS de UMA coluna. Nunca
+// inserir nem apagar linhas ou colunas, nunca escrever noutra coluna — o dono
+// lê esta aba todos os dias e as respostas dos hóspedes não são nossas para
+// mexer.
+var ABA_RESPOSTAS = "Form responses";
+
 // Colunas da aba Reservas. A ordem é estável: o `quarto`, o `nome` e a
 // `submissao` foram ACRESCENTADOS ao fim, porque mudar a posição de uma coluna
 // existente tornaria ilegíveis todas as linhas já guardadas — e uma linha
@@ -814,6 +822,51 @@ function confirmarWebhook_(params, io) {
 }
 
 // ===============================
+// ESPELHO NA ABA DAS RESPOSTAS
+// ===============================
+// O dono quer ver a reserva ao lado das escolhas de menu do hóspede, e não só
+// no registo da cozinha. A coluna `typeA137` da aba das respostas — a resposta
+// do próprio widget — está vazia em TODAS as submissões, porque o JotForm
+// nunca exporta a resposta de um widget. É esse o destino: uma coluna que
+// existe, que ninguém preenche e que já tem o nome certo.
+//
+// As duas colunas são descobertas pelo CABEÇALHO, nunca pela posição. Uma
+// coluna acertada por posição é a mesma armadilha do espelho morto: continua a
+// escrever depois de a folha mudar, só que na célula errada — e aqui a célula
+// errada é a resposta de um hóspede.
+var CABECALHO_ID_RESPOSTAS = /submission\s*id/i;
+var CABECALHO_DESTINO_RESPOSTAS = /typeA137|reserva/i;
+
+// Quando não há coluna, devolve -1 e a funcionalidade fica DESLIGADA: não se
+// escreve nada em sítio nenhum. Adivinhar a coluna seria escrever por cima de
+// respostas de hóspedes.
+function colunaPorCabecalho_(linhas, padrao) {
+  var cabecalho = (linhas || [])[0] || [];
+  for (var i = 0; i < cabecalho.length; i++) {
+    var titulo = String(cabecalho[i] == null ? "" : cabecalho[i]).trim();
+    if (titulo && padrao.test(titulo)) return i;
+  }
+  return -1;
+}
+
+function colunaSubmissao_(linhas) {
+  return colunaPorCabecalho_(linhas, CABECALHO_ID_RESPOSTAS);
+}
+
+function colunaDestino_(linhas) {
+  return colunaPorCabecalho_(linhas, CABECALHO_DESTINO_RESPOSTAS);
+}
+
+// O título da coluna encontrada, para o preparar() o DIZER ao dono. Uma
+// funcionalidade desligada em silêncio é o que aconteceu ao espelho: ninguém
+// reparou durante meses porque nada o reportava. Aqui, ou o preparar() nomeia
+// as duas colunas, ou diz EM FALTA.
+function tituloDaColuna_(linhas, indice) {
+  if (indice < 0) return "";
+  return String(((linhas || [])[0] || [])[indice] || "").trim();
+}
+
+// ===============================
 // NÚCLEO DA RESERVA
 // ===============================
 // A lógica toda está aqui, com a E/S injetada (io), para poder ser testada
@@ -904,6 +957,10 @@ function ioReal_() {
       return (linhas && linhas.length) ? linhas : [CABECALHO_RESERVAS];
     },
     lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
+    // A aba das respostas pode não existir (uma folha nova, ou a integração
+    // do JotForm ainda por ligar). Aí devolve [] e o espelho fica desligado
+    // — sem coluna nenhuma, não há onde escrever.
+    lerRespostas: function () { return lerTudo_(ABA_RESPOSTAS) || []; },
     acrescentar: function (linha) {
       var aba = folha_(ABA_RESERVAS, true);
       // Espelha a guarda de lerReservas: uma aba nova ou esvaziada não tem
@@ -1219,11 +1276,29 @@ function preparar_() {
   // registo de execução é copiável e vai aparecer em capturas de ecrã.
   var io = ioReal_();
   var ultimo = io.ultimoWebhook();
+
+  // E o estado do espelho na aba das respostas, na MESMA mensagem. Sem isto,
+  // uma coluna renomeada desligava a funcionalidade em silêncio e o dono
+  // ficava à espera de valores que nunca apareciam — foi assim que o espelho
+  // do JotForm passou meses partido sem ninguém dar por isso.
+  var respostas = io.lerRespostas();
+  var idId = colunaSubmissao_(respostas);
+  var idDestino = colunaDestino_(respostas);
+  var espelho = ". Coluna do ID: " +
+    (idId < 0 ? "EM FALTA" : "\"" + tituloDaColuna_(respostas, idId) + "\"") +
+    ". Coluna da reserva: " +
+    (idDestino < 0 ? "EM FALTA" : "\"" + tituloDaColuna_(respostas, idDestino) + "\"") +
+    (idId < 0 || idDestino < 0
+      ? " (enquanto houver EM FALTA, a reserva não aparece na aba \"" +
+        ABA_RESPOSTAS + "\"; as reservas e os lugares não são afectados)"
+      : "");
+
   return "Abas prontas. Segredo do webhook: " +
     (io.segredo() ? "definido" : "EM FALTA") +
     ". Formulário esperado: " + (io.formIdEsperado() ? io.formIdEsperado() : "EM FALTA") +
     ". Último webhook recebido: " + (ultimo ? ultimo : "NUNCA") +
-    (ultimo ? "" : " (enquanto for NUNCA, nenhum lugar é libertado)") + ".";
+    (ultimo ? "" : " (enquanto for NUNCA, nenhum lugar é libertado)") +
+    espelho + ".";
 }
 
 // Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
@@ -1283,6 +1358,8 @@ if (typeof module !== "undefined") {
     NOME_CAMPO_NOME: NOME_CAMPO_NOME,
     dadosDoWebhook_: dadosDoWebhook_,
     confirmarWebhook_: confirmarWebhook_,
+    colunaSubmissao_: colunaSubmissao_,
+    colunaDestino_: colunaDestino_,
     reservar_: reservar_,
     preparar: preparar,
     doGet: doGet,
