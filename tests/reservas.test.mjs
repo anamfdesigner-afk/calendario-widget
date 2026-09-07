@@ -2971,6 +2971,53 @@ test("uma célula de destino que ganhou valor entre o plano e a escrita fica int
     "e a outra linha é escrita na mesma");
 });
 
+test("uma escrita saltada no espelho não fica em silêncio", () => {
+  // Neste projeto, um caminho que não escreve e não se queixa é a assinatura
+  // da avaria que custou um dia: o espelho do JotForm esteve meses partido
+  // exactamente assim. As duas reconfirmações do escreverRespostas faziam
+  // `continue` sem dizer nada — quem fosse investigar "por que é que esta
+  // linha nunca recebe a reserva?" não tinha onde olhar.
+  const livro = livroFalso({
+    "Form responses": respostasFalsas([
+      { nome: "Ana", id: ID_ANA },
+      { nome: "Rui", id: ID_RUI }
+    ])
+  });
+  const gsComStub = carregarCom(livro.stubs);
+  const respostas = livro.folhas["Form responses"].dados;
+
+  const plano = gsComStub.planoRespostas_(
+    respostas, reservasComSubmissao(), IDX_ID, IDX_DESTINO);
+  assert.equal(plano.length, 2);
+
+  // Um salto de cada espécie: a linha da Ana muda de id (o dono ordenou), e a
+  // do Rui recebe uma correcção à mão.
+  respostas[1][IDX_ID] = "6437228876324828999";
+  respostas[2][IDX_DESTINO] = "escrito à mão";
+
+  const registo = comRegisto(() => gsComStub.ioReal_().escreverRespostas(plano));
+
+  assert.match(registo, /2 de 2/, "diz quantas saltou, e de quantas");
+  assert.match(registo, /1 porque a linha já não é a que o plano escolheu/);
+  assert.match(registo, /1 porque a célula de destino deixou de estar vazia/);
+});
+
+test("o espelho não escreve no registo quando corre tudo bem", () => {
+  // O contrário também importa: o GET corre a cada data que um hóspede
+  // escolhe, e um registo cheio de linhas normais esconde a única que
+  // interessa.
+  const livro = livroFalso({
+    "Form responses": respostasFalsas([{ nome: "Ana", id: ID_ANA }])
+  });
+  const gsComStub = carregarCom(livro.stubs);
+  const plano = gsComStub.planoRespostas_(
+    livro.folhas["Form responses"].dados, reservasComSubmissao(), IDX_ID, IDX_DESTINO);
+
+  const registo = comRegisto(() => gsComStub.ioReal_().escreverRespostas(plano));
+
+  assert.equal(registo, "");
+});
+
 test("ioReal_.escreverRespostas não cria a aba das respostas quando ela não existe", () => {
   // Uma aba nossa com este nome faria a integração do JotForm criar outra ao
   // lado, e o dono ficava com duas abas de respostas e nenhuma completa.

@@ -1236,6 +1236,8 @@ function ioReal_() {
       var aba = folha_(ABA_RESPOSTAS, false);
       if (!aba) return;
       var escritas = 0;
+      var saltadasId = 0;
+      var saltadasDestino = 0;
       for (var i = 0; i < plano.length; i++) {
         var p = plano[i];
         // RECONFIRMAR a linha antes de lhe tocar. O plano traz números de
@@ -1246,14 +1248,20 @@ function ioReal_() {
         // id e comparar é o que impede a reserva de um ir para a linha do
         // outro; se não casar, salta-se e a passagem seguinte do GET trata
         // dela com números de linha frescos.
-        if (normalizarId_(aba.getRange(p.linha, p.colunaId).getValue()) !== p.id) continue;
+        if (normalizarId_(aba.getRange(p.linha, p.colunaId).getValue()) !== p.id) {
+          saltadasId++;
+          continue;
+        }
 
         // E reler o destino, pela mesma razão: entre o plano e a escrita
         // alguém pode ter escrito ali à mão, e uma correcção do dono nunca
         // pode ser apagada por nós.
         var destino = aba.getRange(p.linha, p.coluna);
         var jaLa = destino.getValue();
-        if (String(jaLa == null ? "" : jaLa).trim()) continue;
+        if (String(jaLa == null ? "" : jaLa).trim()) {
+          saltadasDestino++;
+          continue;
+        }
 
         // Célula a célula, com as coordenadas que o planoRespostas_ já
         // calculou. Nunca insertRow, deleteRow, insertColumn nem um setValues
@@ -1261,6 +1269,23 @@ function ioReal_() {
         // coisa que aqui fazemos é preencher células vazias de uma coluna.
         destino.setValue(p.valor);
         escritas++;
+      }
+      // As duas reconfirmações acima faziam `continue` sem dizer nada. Neste
+      // projeto um caminho que não escreve e não se queixa é a assinatura da
+      // avaria que custou um dia — o espelho do JotForm esteve meses partido
+      // exactamente assim, e quem fosse investigar "por que é que esta linha
+      // nunca recebe a reserva?" não tinha onde olhar. Só quando houver
+      // saltos: o GET corre a cada data que um hóspede escolhe, e um registo
+      // cheio de linhas normais esconde a única que interessa.
+      if (saltadasId || saltadasDestino) {
+        console.log("Espelho: " + (saltadasId + saltadasDestino) + " de " +
+          plano.length + " célula(s) não foram escritas nesta passagem — " +
+          saltadasId + " porque a linha já não é a que o plano escolheu (a " +
+          "aba \"" + ABA_RESPOSTAS + "\" foi ordenada ou teve linhas apagadas " +
+          "entre a leitura e a escrita; a passagem seguinte do GET trata delas " +
+          "com números de linha frescos) e " + saltadasDestino + " porque a " +
+          "célula de destino deixou de estar vazia (uma correcção à mão nunca " +
+          "é apagada por nós). Escritas: " + escritas + ".");
       }
       if (escritas) SpreadsheetApp.flush();
     },
