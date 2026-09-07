@@ -431,8 +431,8 @@ function tokenSemeado_(indice) {
 }
 
 // Procura um token em QUALQUER estado, ao contrário do linhaDoToken_ que só
-// olha para as activas. É o que torna a semeadura idempotente: o dono pode
-// correr preparar() duas vezes. E não ressuscita uma linha semeada que ele
+// olha para as activas. Serve para não reutilizar o token de uma linha de
+// origem já semeada, e para não ressuscitar uma linha semeada que o dono
 // tenha cancelado à mão (mudar `estado` para `expirado`, como o guia
 // autoriza) — uma segunda semeadura não pode desfazer um cancelamento.
 function tokenExiste_(linhas, token) {
@@ -446,6 +446,20 @@ function tokenExiste_(linhas, token) {
 // passada já foi consumida e semeá-la só bloquearia um lugar que ninguém
 // pode usar. Comparação de strings basta — em ISO a ordem lexicográfica é
 // cronológica.
+//
+// A decisão de semear é por CONTAGENS, como a da reconciliação, e não por
+// identidade da linha: para cada slot semeamos só o que FALTA ao registo
+// para cobrir as submissões daquele slot. Bastar "este token ainda não
+// existe" não chegava — depois de o sistema entrar em serviço, as reservas
+// normais têm tokens reais (UUID do widget) e nenhum token sub-<indice>, e
+// correr semear() outra vez criava uma segunda linha para cada uma delas.
+// Reproduzido: duas submissões, uma semeada e uma reservada pelo widget, e
+// a segunda semeadura levava a ocupação a 3.
+//
+// Assim, semear() é seguro a qualquer momento: nunca põe no registo mais
+// linhas do que há submissões. Isso importa porque o formulário pode
+// continuar a receber reservas entre a instalação do script e a passagem
+// do widget para o novo endereço.
 function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
   var out = [];
   if (!submissoes || !submissoes.length) return out;
@@ -455,19 +469,33 @@ function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
   // a menos é o lado seguro: o pior caso é a instalação não bloquear nada.
   if (idx < 0) return out;
 
+  // Agrupa as submissões futuras por slot, guardando o índice da linha de
+  // origem — é dele que sai o token.
+  var porSlot = {};
+  var ordem = [];
   for (var i = 1; i < submissoes.length; i++) {
     var v = normalizarReserva_((submissoes[i] || [])[idx]);
     if (!FORMATO_RESERVA_COMPLETO.test(v)) continue;
 
     var partes = v.split(" | ");
-    var data = partes[0];
-    var horario = partes[1];
-    if (data < hoje) continue;
+    if (partes[0] < hoje) continue;
 
-    var token = tokenSemeado_(i);
-    if (tokenExiste_(reservas, token)) continue;
+    if (!porSlot[v]) {
+      porSlot[v] = { data: partes[0], horario: partes[1], linhas: [] };
+      ordem.push(v);
+    }
+    porSlot[v].linhas.push(i);
+  }
 
-    out.push([token, data, horario, criadoIso_(agoraMs), ESTADO_ACTIVO]);
+  for (var k = 0; k < ordem.length; k++) {
+    var slot = porSlot[ordem[k]];
+    var falta = slot.linhas.length - activos_(reservas, slot.data, slot.horario);
+    for (var n = 0; n < slot.linhas.length && falta > 0; n++) {
+      var token = tokenSemeado_(slot.linhas[n]);
+      if (tokenExiste_(reservas, token)) continue;
+      out.push([token, slot.data, slot.horario, criadoIso_(agoraMs), ESTADO_ACTIVO]);
+      falta--;
+    }
   }
   return out;
 }
@@ -485,8 +513,16 @@ function semear_(io) {
 
   // A marca de água: daqui para a frente, toda a linha nova tem de trazer
   // uma reserva legível, senão a reconciliação para (ver
-  // submissoesFiaveis_). Correr semear() outra vez volta a marcar, e é
-  // esse o remédio se o espelho estiver partido e já se ter corrigido.
+  // submissoesFiaveis_).
+  //
+  // Correr semear() outra vez volta a marcar, e é esse o remédio para um
+  // caso concreto: o espelho do JotForm esteve partido durante um tempo, já
+  // foi corrigido, mas as linhas em branco daquele período ficam na folha
+  // para sempre e travariam a reconciliação para sempre. Remarcar aceita-as
+  // como históricas. Por isso mesmo, NÃO é rotina: remarcar com o espelho
+  // AINDA partido desliga a única guarda que impede reservas reais de serem
+  // libertadas e revendidas. O guia diz ao dono para só correr semear() a
+  // pedido.
   if (io.gravarMarca) io.gravarMarca(submissoes.length);
 
   return { semeadas: plano.length, marca: submissoes.length };

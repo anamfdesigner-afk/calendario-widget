@@ -601,6 +601,39 @@ test("semear_ é idempotente: correr preparar() duas vezes não duplica lugares"
   assert.equal(estado.acrescentadas.length, 3);
 });
 
+test("semear_ não duplica uma reserva que já foi feita pelo widget", () => {
+  // Depois de o sistema entrar em serviço, as reservas normais têm tokens
+  // reais (UUID do widget) e nenhum token sub-<indice>. Bastar "este token
+  // ainda não existe" criava uma SEGUNDA linha para cada uma delas.
+  const submissoes = [
+    ["Submission Date", "Reserva"],
+    ["2026-09-01", "2026-09-09 | 08:00-08:45"]
+  ];
+  const { io, estado } = ioFalso([CAB], { submissoes });
+  assert.equal(gs.semear_(io).semeadas, 1);
+
+  // O hóspede seguinte reserva pelo widget, e a submissão dele aparece.
+  gs.reservar_({ ...PEDIDO_09, token: "real-uuid-1234" }, io);
+  submissoes.push(["2026-09-10", "2026-09-09 | 08:00-08:45"]);
+  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 2);
+
+  assert.equal(gs.semear_(io).semeadas, 0, "duas submissões, duas linhas — não três");
+  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 2);
+});
+
+test("semear_ apanha as reservas que entraram depois da instalação", () => {
+  // O formulário continua a receber reservas entre a instalação do script e
+  // a passagem do widget para o novo endereço: essas linhas não têm reserva
+  // nenhuma no registo e os lugares delas seriam revendidos.
+  const submissoes = [["Submission Date", "Reserva"], ["2026-09-01", "2026-09-09 | 08:00-08:45"]];
+  const { io, estado } = ioFalso([CAB], { submissoes });
+  gs.semear_(io);
+  submissoes.push(["2026-09-05", "2026-09-09 | 08:00-08:45"]);
+
+  assert.equal(gs.semear_(io).semeadas, 1);
+  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 2);
+});
+
 test("semear_ não ressuscita uma linha semeada que o dono cancelou à mão", () => {
   const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
   gs.semear_(io);
