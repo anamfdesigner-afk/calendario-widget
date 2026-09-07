@@ -996,9 +996,9 @@ function temSubmissaoGuardada_(reservas) {
 // Cada entrada leva também a `colunaId` e o `id` que a escolheu, para o
 // escreverRespostas poder RECONFIRMAR a linha antes de lhe tocar. Sem isso, a
 // escrita confiava em números de linha lidos momentos antes: bastava o dono
-// ordenar ou apagar uma linha nessa janela — e o guia ensina ordenar como
-// gesto normal do dia a dia — para a reserva de um hóspede ir parar à linha de
-// outro.
+// ordenar ou apagar uma linha nessa janela — e o guia ensinava ordenar como
+// gesto normal do dia a dia, até isto o obrigar a trocar o conselho por
+// filtrar — para a reserva de um hóspede ir parar à linha de outro.
 function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
   var plano = [];
   if (idxId < 0 || idxDestino < 0) return plano;
