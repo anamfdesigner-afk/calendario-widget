@@ -14,17 +14,6 @@
 const RESERVAS_URL =
   "https://script.google.com/macros/s/AKfycby8uX6UN3noJ7Y5Ep2uG_y2jvqMavPNEshMAKUkNxYgJL0o52PCbo2lrt8RAJ_Vv7lyAg/exec";
 
-// LABEL exata do campo Short Text criado no JotForm que vai receber
-// uma cópia do valor. É este campo normal que a integração exporta.
-// Pôr "" para desligar o espelho.
-const CAMPO_ESPELHO_LABEL = "Reserva";
-
-// ID da pergunta do mesmo campo ("id_135" no HTML do formulário ->
-// "135"). Escrevemos por ID **e** por LABEL: o ID não se estraga se
-// alguém renomear a label, e a label continua a funcionar se o campo
-// for recriado com outro ID. Pôr "" para desligar.
-const CAMPO_ESPELHO_ID = "135";
-
 // Bloquear submissão sem horário escolhido
 const OBRIGATORIO = true;
 
@@ -112,52 +101,6 @@ function ajustarAltura() {
 
 function formatarValor(date, slot) {
   return `${date} | ${slot}`;
-}
-
-// ===============================
-// ESPELHO NUM CAMPO NORMAL
-// ===============================
-// A integração do JotForm exporta campos normais de forma fiável, mas
-// não a resposta deste widget. Copiamos o valor para um Short Text.
-// O método correto é setFieldsValueByLabel (setFieldsValue NÃO existe).
-// ATENÇÃO: por dentro, o setFieldsValueBy* é só um postMessage para o
-// formulário ("fields:fill"). Não devolve nada e não dá erro se o
-// campo não existir. Um alvo errado é indistinguível de sucesso visto
-// de dentro do widget. Escrevemos pelos DOIS caminhos para reduzir o risco.
-function espelharEmCampo(v) {
-  if (!temJF) return;
-
-  let enviado = false;
-
-  if (CAMPO_ESPELHO_ID &&
-      typeof JFCustomWidget.setFieldsValueById === "function") {
-    try {
-      const porId = {};
-      porId[CAMPO_ESPELHO_ID] = v;
-      JFCustomWidget.setFieldsValueById(porId);
-      enviado = true;
-      log(`Espelho enviado por ID ${CAMPO_ESPELHO_ID}: ${v}`);
-    } catch (e) {
-      log("ERRO no espelho por ID: " + e.message);
-    }
-  }
-
-  if (CAMPO_ESPELHO_LABEL &&
-      typeof JFCustomWidget.setFieldsValueByLabel === "function") {
-    try {
-      const porLabel = {};
-      porLabel[CAMPO_ESPELHO_LABEL] = v;
-      JFCustomWidget.setFieldsValueByLabel(porLabel);
-      enviado = true;
-      log(`Espelho enviado por LABEL "${CAMPO_ESPELHO_LABEL}": ${v}`);
-    } catch (e) {
-      log("ERRO no espelho por LABEL: " + e.message);
-    }
-  }
-
-  if (!enviado) {
-    log("AVISO: a API não tem setFieldsValueById nem ...ByLabel.");
-  }
 }
 
 // ===============================
@@ -267,11 +210,15 @@ function selecionar(date, slot) {
   desenharBotoes();
 
   if (temJF) {
+    // NÃO É CÓDIGO MORTO. Esta é agora a única forma de a reserva chegar à
+    // submissão: o webhook da JotForm lê o valor da resposta do PRÓPRIO
+    // widget (chave `q137_typeA137` do rawRequest) e é assim que sabe que
+    // lugar confirmar. O espelho num campo normal, que era o caminho
+    // "fiável", nunca funcionou — o campo Reserva ficou sempre vazio.
     JFCustomWidget.sendData({ value: value });
     if (JFCustomWidget.hideWidgetError) JFCustomWidget.hideWidgetError();
   }
 
-  espelharEmCampo(value);
   log("Selecionado: " + value);
 }
 
@@ -401,7 +348,6 @@ if (!temJF) {
         if (r && r.cheio) {
           log(`RECUSADO: ${slotEscolhido} ficou sem vagas entre a escolha e a submissão.`);
           value = "";
-          espelharEmCampo("");
           carregarSlots(dataEscolhida);
           // showWidgetError já envia sendSubmit({valid:false}).
           JFCustomWidget.showWidgetError(
@@ -414,7 +360,6 @@ if (!temJF) {
           log("Revalidação sem resposta em tempo útil: a deixar passar.");
         }
 
-        espelharEmCampo(value);
         JFCustomWidget.sendSubmit({ valid: true, value: value });
       })
       .catch(e => {
@@ -423,7 +368,6 @@ if (!temJF) {
         // aqui estourasse uma exceção, o hóspede ficava preso no botão
         // de submeter para sempre.
         log("ERRO na revalidação: " + e.message + " — a deixar passar.");
-        espelharEmCampo(value);
         JFCustomWidget.sendSubmit({ valid: true, value: value });
       });
   });

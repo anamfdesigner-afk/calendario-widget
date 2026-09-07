@@ -213,6 +213,31 @@ test("uma resposta velha não desenha por cima da mais recente", async () => {
 // ===============================
 // SELECIONAR
 // ===============================
+test("selecionar manda o valor pelo sendData — é por aí que o webhook o lê", () => {
+  // NÃO é código morto: a resposta do próprio widget (q137_typeA137) é o
+  // único sítio de onde o webhook consegue tirar que lugar confirmar.
+  const { widget, jf } = montar();
+
+  widget.selecionar("2026-09-08", "08:00-08:45");
+
+  assert.deepEqual(
+    jf.chamadas.filter(c => c[0] === "sendData"),
+    [["sendData", "2026-09-08 | 08:00-08:45"]]
+  );
+  assert.equal(widget.valorEscolhido(), "2026-09-08 | 08:00-08:45");
+});
+
+test("o espelho num campo normal desapareceu de vez", () => {
+  // Verificado no formulário publicado: o campo Reserva ficava sempre vazio e
+  // o setFieldsValueBy* nunca dava erro. Código que finge funcionar é pior do
+  // que código nenhum — foi o que escondeu este bug durante meses.
+  const { widget, jf } = montar();
+
+  widget.selecionar("2026-09-08", "08:00-08:45");
+
+  assert.deepEqual(jf.chamadas.filter(c => /setFieldsValue/.test(c[0])), []);
+});
+
 test("selecionar ignora um botão cuja data já não é a que está no ecrã", async () => {
   const fetchStub = fetchFalso({
     get: async () => resposta({ ok: true, slots: SLOTS_EXEMPLO })
