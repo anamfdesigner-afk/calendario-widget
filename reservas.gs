@@ -68,6 +68,14 @@ var CHAVE_RESERVA_TOLERANTE = /reserva/i;
 var CHAVE_SEGREDO = "segredoWebhook";
 var CHAVE_FORM_ID = "formIdEsperado";
 var CHAVE_ULTIMO_WEBHOOK = "ultimoWebhook";
+var CHAVE_SUBMISSOES = "submissoesConfirmadas";
+
+// Quantos `submissionID` se guardam para reconhecer uma entrega repetida (ver
+// confirmarWebhook_). Um anel curto nas propriedades do script chega e evita
+// uma coluna nova na folha: o que interessa é apanhar a repetição de minutos
+// ou horas depois, não a de um mês depois — a essa altura a linha já foi
+// servida ao pequeno-almoço.
+var MAX_SUBMISSOES_LEMBRADAS = 50;
 
 // Uma órfã é uma linha `activo` com mais de 20 minutos: se a submissão se
 // tivesse concluído, o webhook já teria chegado e a linha estaria
@@ -604,6 +612,27 @@ function dadosDoWebhook_(bruto) {
   return out;
 }
 
+// O anel dos `submissionID` já confirmados, guardado como texto simples nas
+// propriedades do script (um id por linha).
+function listaDeSubmissoes_(texto) {
+  var bruto = String(texto == null ? "" : texto).split(/\s+/);
+  var out = [];
+  for (var i = 0; i < bruto.length; i++) {
+    if (bruto[i]) out.push(bruto[i]);
+  }
+  return out;
+}
+
+// O id à cabeça, os mais recentes primeiro, cortado no limite.
+function comSubmissao_(lista, id) {
+  var out = [id];
+  for (var i = 0; i < lista.length; i++) {
+    if (out.length >= MAX_SUBMISSOES_LEMBRADAS) break;
+    if (lista[i] !== id) out.push(lista[i]);
+  }
+  return out;
+}
+
 // O portão: as duas verificações que autenticam o pedido — o segredo e o
 // formulário. Não tocam na folha, e é por isso que o doPost as corre ANTES de
 // pegar no lock.
@@ -681,6 +710,22 @@ function confirmarWebhook_(params, io) {
   // linha em falta não desmente isso.
   io.gravarUltimoWebhook(io.agora());
 
+  // A MESMA submissão só confirma UMA linha. Uma confirmação é permanente e
+  // não tem como se desfazer, e nada registava de que submissão tinha vindo:
+  // uma entrega repetida — a JotForm a repetir um pedido que expirou no
+  // transporte, coisa que uma espera de lock mais um arranque a frio tornam
+  // plausível, ou o dono a reenviar à mão — encontrava a linha do hóspede já
+  // `confirmado` e confirmava a SEGUINTE mais antiga: a linha de outro
+  // hóspede, com o quarto e o nome do primeiro. Se essa outra tivesse sido
+  // abandonada, o lugar ficava consumido por ninguém, para sempre.
+  var submissao = String(p.submissionID == null ? "" : p.submissionID).trim();
+  var vistas = io.submissoesVistas ? listaDeSubmissoes_(io.submissoesVistas()) : [];
+  if (submissao && vistas.indexOf(submissao) >= 0) {
+    console.log("Webhook repetido: a submissão " + submissao + " já confirmou " +
+      "uma linha. Não confirmo outra — seria prender o lugar de outro hóspede.");
+    return { ok: true, confirmado: false, motivo: "submissao_repetida" };
+  }
+
   var indice = maisAntigaActiva_(
     io.lerReservas(), dados.data, dados.horario, io.agora(), JANELA_ORFAS_MS);
   if (indice < 0) {
@@ -691,6 +736,11 @@ function confirmarWebhook_(params, io) {
   }
 
   io.confirmar(indice, dados.quarto, dados.nome);
+  // Só depois de haver mesmo uma linha confirmada: uma entrega que não
+  // confirmou nada não gastou nada, e repeti-la não faz mal a ninguém.
+  if (submissao && io.gravarSubmissoesVistas) {
+    io.gravarSubmissoesVistas(comSubmissao_(vistas, submissao).join("\n"));
+  }
   return { ok: true, confirmado: true };
 }
 
@@ -821,6 +871,10 @@ function ioReal_() {
     gravarUltimoWebhook: function (ms) {
       PropertiesService.getScriptProperties()
         .setProperty(CHAVE_ULTIMO_WEBHOOK, criadoIso_(ms));
+    },
+    submissoesVistas: function () { return propriedade_(CHAVE_SUBMISSOES); },
+    gravarSubmissoesVistas: function (texto) {
+      PropertiesService.getScriptProperties().setProperty(CHAVE_SUBMISSOES, texto);
     },
     agora: function () { return Date.now(); }
   };

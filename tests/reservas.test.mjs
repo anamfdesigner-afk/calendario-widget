@@ -312,7 +312,10 @@ function ioFalso(reservas, opcoes = {}) {
     // nova, e é ele que trava a reconciliação.
     ultimoWebhook: opcoes.ultimoWebhook === undefined ? null : opcoes.ultimoWebhook,
     segredo: opcoes.segredo === undefined ? "s3gr3d0-do-webhook" : opcoes.segredo,
-    formId: opcoes.formId === undefined ? "253294429726062" : opcoes.formId
+    formId: opcoes.formId === undefined ? "253294429726062" : opcoes.formId,
+    // O anel dos submissionID já confirmados, como vive nas propriedades do
+    // script: texto simples, um id por linha.
+    submissoes: opcoes.submissoes === undefined ? "" : opcoes.submissoes
   };
   return {
     estado,
@@ -341,6 +344,8 @@ function ioFalso(reservas, opcoes = {}) {
       formIdEsperado: () => estado.formId,
       ultimoWebhook: () => estado.ultimoWebhook,
       gravarUltimoWebhook: ms => { estado.ultimoWebhook = new Date(ms).toISOString(); },
+      submissoesVistas: () => estado.submissoes,
+      gravarSubmissoesVistas: texto => { estado.submissoes = texto; },
       agora: () => opcoes.agora || AGORA
     }
   };
@@ -726,8 +731,13 @@ function raw(reserva = "2026-09-08 | 08:45-09:30", extra = {}) {
   }, extra));
 }
 
+const SUBMISSAO = "6000000000000000001";
+
 function webhook(extra = {}) {
-  return Object.assign({ k: SEGREDO, formID: FORM_ID, rawRequest: raw() }, extra);
+  return Object.assign(
+    { k: SEGREDO, formID: FORM_ID, rawRequest: raw(), submissionID: SUBMISSAO },
+    extra
+  );
 }
 
 test("achatarValor_ junta um nome partido em first e last", () => {
@@ -1025,6 +1035,89 @@ test("um webhook sem linha activa correspondente não cria reserva nenhuma", () 
   // O canal está de pé — é isso que se prova aqui — mesmo sem linha para
   // confirmar.
   assert.equal(estado.ultimoWebhook, new Date(AGORA).toISOString());
+});
+
+// ===============================
+// UMA ENTREGA REPETIDA NÃO CONFIRMA UMA SEGUNDA LINHA
+// ===============================
+// Uma confirmação é permanente e não se desfaz. Nada registava de que
+// submissão tinha vindo, pelo que uma entrega repetida — a JotForm a repetir
+// um pedido que expirou no transporte, ou o dono a reenviar à mão — encontrava
+// a linha do hóspede já `confirmado` e confirmava a SEGUINTE mais antiga: a
+// linha de outro hóspede, com o quarto e o nome do primeiro.
+
+test("o mesmo submissionID entregue duas vezes confirma exactamente uma linha", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    ["primeiro", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 5 * 60 * 1000), "activo", "", ""],
+    ["segundo", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
+  ]);
+
+  assert.deepEqual(gs.confirmarWebhook_(webhook(), io), { ok: true, confirmado: true });
+
+  const registo = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), io), {
+      ok: true, confirmado: false, motivo: "submissao_repetida"
+    });
+  });
+
+  assert.deepEqual(estado.confirmadas.map(c => c.indice), [1], "uma linha, uma só vez");
+  assert.equal(estado.reservas[2][4], "activo", "a linha do outro hóspede não pode ser tocada");
+  assert.equal(estado.reservas[2][6], "", "nem ganhar o nome do primeiro");
+  assert.match(registo, /repetido/);
+});
+
+test("submissões diferentes confirmam linhas diferentes", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    ["primeiro", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 5 * 60 * 1000), "activo", "", ""],
+    ["segundo", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
+  ]);
+
+  assert.deepEqual(gs.confirmarWebhook_(webhook(), io), { ok: true, confirmado: true });
+  assert.deepEqual(gs.confirmarWebhook_(webhook({ submissionID: "6000000000000000002" }), io), {
+    ok: true, confirmado: true
+  });
+
+  assert.deepEqual(estado.confirmadas.map(c => c.indice), [1, 2]);
+  assert.deepEqual(estado.submissoes.split("\n"),
+    ["6000000000000000002", SUBMISSAO], "os mais recentes à cabeça");
+});
+
+test("uma entrega que não confirmou nada pode ser repetida à vontade", () => {
+  // Nada foi gasto, e guardar o id impediria a confirmação verdadeira que
+  // ainda pode chegar depois de a linha ser criada.
+  const { io, estado } = ioFalso([CAB]);
+  comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), io), {
+      ok: true, confirmado: false, motivo: "sem_reserva_activa"
+    });
+  });
+  assert.equal(estado.submissoes, "", "nada a lembrar");
+});
+
+test("um webhook sem submissionID continua a confirmar", () => {
+  // Não se pode desduplicar o que não vem identificado, e recusar seria
+  // deixar a reserva por confirmar e o lugar a ser revendido aos 20 minutos.
+  const { io, estado } = ioFalso(DUAS_ACTIVAS);
+  assert.deepEqual(gs.confirmarWebhook_(webhook({ submissionID: undefined }), io), {
+    ok: true, confirmado: true
+  });
+  assert.deepEqual(estado.confirmadas.map(c => c.indice), [2]);
+  assert.equal(estado.submissoes, "");
+});
+
+test("o anel de submissões não cresce sem fim", () => {
+  const cheio = [];
+  for (let i = 0; i < 60; i++) cheio.push("id-" + i);
+  const { io, estado } = ioFalso(DUAS_ACTIVAS, { submissoes: cheio.join("\n") });
+
+  gs.confirmarWebhook_(webhook(), io);
+
+  const guardadas = estado.submissoes.split("\n");
+  assert.equal(guardadas.length, 50);
+  assert.equal(guardadas[0], SUBMISSAO, "o mais recente à cabeça");
+  assert.equal(guardadas[49], "id-48", "os mais velhos caem");
 });
 
 test("um webhook válido arma a reconciliação, e só ele", () => {
@@ -1888,4 +1981,11 @@ test("ioReal_ lê o segredo e o formulário das propriedades do script", () => {
   io.gravarUltimoWebhook(AGORA);
   assert.equal(guardadas.ultimoWebhook, new Date(AGORA).toISOString());
   assert.equal(io.ultimoWebhook(), new Date(AGORA).toISOString());
+
+  // E o anel das submissões já confirmadas, que reconhece uma entrega
+  // repetida sem gastar uma coluna da folha.
+  assert.equal(io.submissoesVistas(), null);
+  io.gravarSubmissoesVistas("6000000000000000001");
+  assert.equal(guardadas.submissoesConfirmadas, "6000000000000000001");
+  assert.equal(io.submissoesVistas(), "6000000000000000001");
 });
