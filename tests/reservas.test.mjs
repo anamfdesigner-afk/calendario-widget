@@ -1767,6 +1767,28 @@ test("uma reserva cancelada não vai parar à aba das respostas", () => {
   );
 });
 
+test("o espelho usa a MESMA régua da ocupação, e não uma lista de palavras", () => {
+  // Medido antes: o espelho saltava só o `estado === "expirado"` exacto.
+  // `Expirado` com maiúscula — a palavra que o guia manda escrever, escrita
+  // como o Sheets a corrige —, um `cancelado` inventado pelo dono e uma
+  // célula apagada libertam TODOS o lugar (o ocupaLugar_ não os conta) e
+  // continuavam a ser espelhados: o dono cancelava, via o lugar libertar-se, e
+  // via a reserva aparecer na mesma ao lado do menu — para sempre, porque a
+  // célula deixava de estar vazia.
+  const submissoes = respostasFalsas([{ nome: "Ana", id: ID_ANA }, { nome: "Rui", id: ID_RUI }]);
+  ["Expirado", "EXPIRADO", "cancelado", "", "   "].forEach(estado => {
+    const reservas = reservasComSubmissao();
+    reservas[1][4] = estado;
+    assert.equal(gs.ocupaLugar_(estado), false,
+      "só faz sentido testar estados que já libertam o lugar: \"" + estado + "\"");
+    assert.deepEqual(
+      gs.planoRespostas_(submissoes, reservas, IDX_ID, IDX_DESTINO),
+      [{ linha: 3, coluna: 4, colunaId: 22, id: ID_RUI, valor: "2026-09-08 | 08:00-08:45" }],
+      "com o estado \"" + estado + "\" a reserva da Ana não se espelha"
+    );
+  });
+});
+
 test("uma data que o Sheets converteu não se propaga para a aba do dono", () => {
   // Se a coluna `data` tiver sido coagida a célula de data, o normalizarData_
   // devolve o número de série do Sheets. Escrever "46000 | 08:45-09:30" na aba

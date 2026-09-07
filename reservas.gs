@@ -1009,12 +1009,18 @@ function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
     var id = normalizarId_(linhaR[COL_SUBMISSAO]);
     if (!id) continue;
 
-    // Uma reserva CANCELADA não se espelha. Pôr o `estado` a `expirado` é o
-    // único gesto que o guia autoriza ao dono; sem esta guarda, quem cancelava
-    // via a reserva aparecer na aba das respostas na mesma — e, pior, ficava
-    // lá para sempre, porque a célula deixava de estar vazia.
-    if (String(linhaR[COL_ESTADO] == null ? "" : linhaR[COL_ESTADO]).trim() ===
-        ESTADO_EXPIRADO) continue;
+    // Uma reserva que já não ocupa lugar não se espelha. Pôr o `estado` a
+    // `expirado` é o único gesto que o guia autoriza ao dono; sem esta guarda,
+    // quem cancelava via a reserva aparecer na aba das respostas na mesma — e,
+    // pior, ficava lá para sempre, porque a célula deixava de estar vazia.
+    //
+    // A régua é o ocupaLugar_, a MESMA que decide a ocupação, e não uma lista
+    // de palavras proibidas. Enquanto isto comparava com `expirado` exacto,
+    // medido: `Expirado` com maiúscula, um `cancelado` inventado pelo dono e
+    // uma célula apagada libertavam todos o lugar e continuavam a ser
+    // espelhados. Uma lista negra esquece sempre um caso; a régua da ocupação,
+    // por construção, não pode divergir dela própria.
+    if (!ocupaLugar_(linhaR[COL_ESTADO])) continue;
 
     // Um submissionID confirma no máximo UMA linha (ver o anel do
     // confirmarWebhook_), logo a primeira que se encontra é a única.
