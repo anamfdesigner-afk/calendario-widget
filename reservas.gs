@@ -525,15 +525,21 @@ function dadosDoWebhook_(bruto) {
   return out;
 }
 
-// As três verificações, por esta ordem. Qualquer uma que falhe devolve
-// ok:false e NÃO confirma nada — nem marca que chegou webhook nenhum, senão
-// um POST anónimo qualquer armava a reconciliação.
+// O portão: as duas verificações que autenticam o pedido — o segredo e o
+// formulário. Não tocam na folha, e é por isso que o doPost as corre ANTES de
+// pegar no lock.
 //
-// Se não houver linha `activo` para aquele par (o webhook chegou depois de a
-// reconciliação já ter libertado a linha, ou a submissão não passou pelo
-// widget), regista-se e não se cria nada: inventar uma reserva a partir de
-// um webhook seria dar a um POST o poder de ocupar lugares.
-function confirmarWebhook_(params, io) {
+// A ordem é a da emenda: primeiro o segredo, depois o formulário, e só depois
+// (já no confirmarWebhook_) a reserva. O que a ordem protege é o que tem de
+// ser verdade antes de uma ESCRITA, e nada aqui escreve.
+//
+// Correr isto antes do lock não é micro-optimização: o endereço do web app é
+// público por desenho, e enquanto o lock vinha primeiro bastava um POST com
+// `rawRequest` e sem `k` para ficar dez segundos na fila do mutex. Alguns por
+// segundo saturavam-no, as reservas verdadeiras (que esperam 3,5 s) recebiam
+// lock_indisponivel, o widget falha fechado de propósito — e o formulário
+// deixava de aceitar reservas.
+function portaoWebhook_(params, io) {
   var p = params || {};
 
   var segredo = io.segredo ? io.segredo() : null;
@@ -560,6 +566,27 @@ function confirmarWebhook_(params, io) {
       " e o esperado é outro.");
     return { ok: false, erro: "formulario_inesperado" };
   }
+
+  return { ok: true };
+}
+
+// As três verificações, por esta ordem. Qualquer uma que falhe devolve
+// ok:false e NÃO confirma nada — nem marca que chegou webhook nenhum, senão
+// um POST anónimo qualquer armava a reconciliação.
+//
+// O portão volta a ser corrido aqui, mesmo quando o doPost já o correu: é a
+// única forma de esta função ser segura por si, e é ela que os testes chamam
+// directamente. Duas leituras de propriedades não custam nada.
+//
+// Se não houver linha `activo` para aquele par (o webhook chegou depois de a
+// reconciliação já ter libertado a linha, ou a submissão não passou pelo
+// widget), regista-se e não se cria nada: inventar uma reserva a partir de
+// um webhook seria dar a um POST o poder de ocupar lugares.
+function confirmarWebhook_(params, io) {
+  var p = params || {};
+
+  var portao = portaoWebhook_(p, io);
+  if (!portao.ok) return portao;
 
   var dados = dadosDoWebhook_(p.rawRequest);
   if (!dados) {
@@ -793,6 +820,16 @@ function doPost(e) {
   var params = (e && e.parameter) || {};
 
   if (params.formID !== undefined || params.rawRequest !== undefined) {
+    var ioWebhook = ioReal_();
+
+    // AUTENTICAR PRIMEIRO, pegar no lock depois. O endereço é público por
+    // desenho: enquanto o lock vinha primeiro, um POST com `rawRequest` e sem
+    // `k` ficava dez segundos na fila do mutex, e alguns por segundo bastavam
+    // para as reservas verdadeiras (3,5 s de espera) receberem
+    // lock_indisponivel e o formulário deixar de aceitar reservas.
+    var portao = portaoWebhook_(params, ioWebhook);
+    if (!portao.ok) return resposta_(portao);
+
     var lockWebhook = LockService.getScriptLock();
     // A confirmação corre no MESMO mutex da reserva: lê a folha, escolhe uma
     // linha e escreve-a. Sem o lock, escolhia uma linha que um doPost a
@@ -802,7 +839,7 @@ function doPost(e) {
       return resposta_({ ok: false, erro: "lock_indisponivel" });
     }
     try {
-      return resposta_(confirmarWebhook_(params, ioReal_()));
+      return resposta_(confirmarWebhook_(params, ioWebhook));
     } catch (err) {
       console.log("Webhook falhou: " + err);
       return resposta_({ ok: false, erro: "erro_interno" });

@@ -1460,7 +1460,49 @@ test("doPost recusa um webhook com o segredo errado sem tocar na folha", () => {
   assert.deepEqual(r, { ok: false, erro: "segredo_invalido" });
   assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
   assert.equal(livro.propriedades.ultimoWebhook, undefined, "não arma a reconciliação");
-  assert.equal(livro.chamadas.releaseLock, 1, "o lock tem de sair sempre");
+  // E sobretudo: NÃO pega no lock. Antes pegava, e um POST anónimo com
+  // rawRequest ficava dez segundos na fila do mutex — ver o teste seguinte.
+  assert.deepEqual(livro.chamadas.tryLock, [], "um pedido não autenticado não espera pelo mutex");
+  assert.equal(livro.chamadas.releaseLock, 0, "não se larga um lock que não se tem");
+});
+
+test("um POST anónimo com rawRequest não chega a pegar no lock das reservas", () => {
+  // O endereço do web app é público por desenho. Enquanto o lock vinha antes
+  // da autenticação, cada pedido destes ocupava a fila do mutex por dez
+  // segundos: alguns por segundo e as reservas verdadeiras (que esperam 3,5 s)
+  // recebiam lock_indisponivel — e o widget falha fechado de propósito, pelo
+  // que o formulário deixava de aceitar reservas.
+  const livro = livroFalso({
+    Reservas: [CAB, ["v", "2026-09-08", "08:45-09:30", gs.criadoIso_(Date.now()), "activo", "", ""]],
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
+  const gsComStub = carregarCom(livro.stubs);
+
+  comRegisto(() => {
+    // Sem `k` nenhum, e depois com o formulário errado.
+    gsComStub.doPost({ parameter: { formID: FORM_ID, rawRequest: raw() } });
+    gsComStub.doPost({ parameter: webhook({ formID: "999" }) });
+  });
+
+  assert.deepEqual(livro.chamadas.tryLock, [], "nem uma tentativa de lock");
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+  assert.equal(livro.propriedades.ultimoWebhook, undefined);
+});
+
+test("as propriedades do webhook não são lidas duas vezes por engano", () => {
+  // O doPost corre o portão e passa o MESMO io ao confirmarWebhook_, que o
+  // volta a correr (para ser seguro chamado sozinho). O que não pode é
+  // divergir: o mesmo pedido tem de dar a mesma resposta pelos dois caminhos.
+  const livro = livroFalso({
+    Reservas: [CAB, ["v", "2026-09-08", "08:45-09:30", gs.criadoIso_(Date.now()), "activo", "", ""]],
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doPost({ parameter: webhook() }));
+
+  assert.deepEqual(r, { ok: true, confirmado: true });
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "confirmado");
 });
 
 test("doPost devolve lock_indisponivel ao webhook em vez de confirmar às cegas", () => {
