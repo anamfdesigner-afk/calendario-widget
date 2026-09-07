@@ -332,11 +332,24 @@ function lerTudo_(nome) {
 
 function ioReal_() {
   return {
-    lerReservas: function () { return lerTudo_(ABA_RESERVAS) || [CABECALHO_RESERVAS]; },
+    // lerTudo_ devolve null só quando a ABA não existe; uma aba que existe
+    // mas está vazia devolve [], que é verdadeiro em JS e por isso NÃO
+    // ativava o substituto abaixo. Sem este `.length`, a primeira reserva
+    // acrescentada ficava na linha do cabeçalho — invisível para sempre,
+    // porque todas as funções puras começam a contar em i = 1.
+    lerReservas: function () {
+      var linhas = lerTudo_(ABA_RESERVAS);
+      return (linhas && linhas.length) ? linhas : [CABECALHO_RESERVAS];
+    },
     lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
     lerSubmissoes: function () { return lerTudo_(ABA_SUBMISSOES); },
     acrescentar: function (linha) {
-      folha_(ABA_RESERVAS, true).appendRow(linha);
+      var aba = folha_(ABA_RESERVAS, true);
+      // Espelha a guarda de lerReservas: uma aba nova ou esvaziada não tem
+      // cabeçalho nenhum, e sem ele a linha que estamos prestes a escrever
+      // seria a linha 1 — a mesma que lerReservas trata como cabeçalho.
+      if (aba.getLastRow() < 1) aba.appendRow(CABECALHO_RESERVAS);
+      aba.appendRow(linha);
       // Sem isto, o doPost pode largar o lock antes do appendRow ficar
       // visível a uma leitura seguinte, e o pedido seguinte lê a folha sem
       // ver o lugar que acabou de ser ocupado: as duas reservas ganham o

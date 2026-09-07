@@ -424,3 +424,27 @@ test("ioReal_.acrescentar dá flush depois do appendRow", () => {
   assert.equal(chamadas.appendRow.length, 1);
   assert.equal(chamadas.flush, 1);
 });
+
+test("ioReal_ semeia o cabeçalho numa aba Reservas vazia, e lerReservas trata [] como vazia", () => {
+  // Uma aba que existe mas não tem linhas devolve [] de lerTudo_, que é
+  // verdadeiro em JS — sem tratar este caso à parte, a primeira reserva
+  // acrescentada ficaria na linha do cabeçalho e nunca seria contada.
+  const linhas = [];
+  const folhaFalsa = {
+    getLastRow: () => linhas.length,
+    getLastColumn: () => (linhas[0] || []).length,
+    appendRow: linha => linhas.push(linha.slice())
+  };
+  const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
+  const gsComStub = carregarGs(new URL("../reservas.gs", import.meta.url).pathname, {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
+  });
+  const io = gsComStub.ioReal_();
+
+  assert.deepEqual(io.lerReservas(), [CAB]);
+
+  io.acrescentar(["t1", "2026-09-08", "08:00-08:45", new Date(), "activo"]);
+
+  assert.deepEqual(linhas[0], CAB);
+  assert.equal(linhas.length, 2);
+});
