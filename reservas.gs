@@ -15,10 +15,15 @@
 var ABA_RESERVAS = "Reservas";
 var ABA_CAPACIDADES = "Capacidades";
 
-// Colunas da aba Reservas. A ordem é estável: o `quarto` e o `nome` foram
-// ACRESCENTADOS ao fim, porque mudar a posição de uma coluna existente
-// tornaria ilegíveis todas as linhas já guardadas — e uma linha ilegível é
-// um lugar vendido que deixa de contar para a ocupação.
+// Colunas da aba Reservas. A ordem é estável: o `quarto`, o `nome` e a
+// `submissao` foram ACRESCENTADOS ao fim, porque mudar a posição de uma coluna
+// existente tornaria ilegíveis todas as linhas já guardadas — e uma linha
+// ilegível é um lugar vendido que deixa de contar para a ocupação.
+//
+// A `submissao` é o `submissionID` que o webhook já trazia e que até aqui só
+// vivia no anel anti-repetição das propriedades do script. Guardá-la na linha
+// dá às duas tabelas a ÚNICA chave comum que alguma vez tiveram: sem ela não
+// há como dizer que linha da aba das respostas corresponde a que reserva.
 var COL_TOKEN = 0;
 var COL_DATA = 1;
 var COL_HORARIO = 2;
@@ -26,8 +31,11 @@ var COL_CRIADO = 3;
 var COL_ESTADO = 4;
 var COL_QUARTO = 5;
 var COL_NOME = 6;
+var COL_SUBMISSAO = 7;
 
-var CABECALHO_RESERVAS = ["token", "data", "horario", "criado", "estado", "quarto", "nome"];
+var CABECALHO_RESERVAS = [
+  "token", "data", "horario", "criado", "estado", "quarto", "nome", "submissao"
+];
 var CABECALHO_CAPACIDADES = ["horario", "vagas"];
 
 var ESTADO_ACTIVO = "activo";
@@ -790,7 +798,13 @@ function confirmarWebhook_(params, io) {
     return { ok: true, confirmado: false, motivo: "sem_reserva_activa" };
   }
 
-  io.confirmar(indice, dados.quarto, dados.nome);
+  // A `submissao` vai para a linha, e não só para o anel das propriedades: é
+  // ela que liga esta reserva à linha da aba das respostas (ver
+  // planoRespostas_). Sem submissionID guarda-se vazio, e essa reserva
+  // simplesmente nunca aparece ao lado do menu do hóspede — não se inventa
+  // uma correspondência por data e horário, que casaria a reserva de um
+  // hóspede com a submissão de outro no mesmo slot.
+  io.confirmar(indice, dados.quarto, dados.nome, submissao);
   // Só depois de haver mesmo uma linha confirmada: uma entrega que não
   // confirmou nada não gastou nada, e repeti-la não faz mal a ninguém.
   if (submissao && io.gravarSubmissoesVistas) {
@@ -844,8 +858,12 @@ function reservar_(pedido, io) {
   if (!livre) return { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
 
   if (existente) io.expirar([existente.indice]);
+  // Oito valores, tantos quantas as colunas do CABECALHO_RESERVAS: o quarto, o
+  // nome e a submissão só se sabem na confirmação. Escrever menos valores do
+  // que colunas deixaria a coluna nova sem célula nenhuma, e um getValues()
+  // de uma linha mais curta devolve `undefined` onde o código espera "".
   io.acrescentar([
-    token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO, "", ""
+    token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO, "", "", ""
   ]);
 
   return { ok: true, reservado: true, estado: existente ? "trocado" : "novo" };
@@ -908,16 +926,17 @@ function ioReal_() {
       }
       SpreadsheetApp.flush();
     },
-    confirmar: function (indice, quarto, nome) {
+    confirmar: function (indice, quarto, nome, submissao) {
       var aba = folha_(ABA_RESERVAS, true);
       var linha = indice + 1;
-      // O ESTADO primeiro, o quarto e o nome depois. É o estado que protege
-      // o lugar de ser libertado pela reconciliação: se a escrita falhar a
-      // meio, mais vale um lugar protegido sem nome do que um nome guardado
-      // numa linha que a reconciliação ainda vai revender.
+      // O ESTADO primeiro, o quarto, o nome e a submissão depois. É o estado
+      // que protege o lugar de ser libertado pela reconciliação: se a escrita
+      // falhar a meio, mais vale um lugar protegido sem nome do que um nome
+      // guardado numa linha que a reconciliação ainda vai revender.
       aba.getRange(linha, COL_ESTADO + 1).setValue(ESTADO_CONFIRMADO);
       aba.getRange(linha, COL_QUARTO + 1).setValue(quarto);
       aba.getRange(linha, COL_NOME + 1).setValue(nome);
+      aba.getRange(linha, COL_SUBMISSAO + 1).setValue(submissao == null ? "" : submissao);
       SpreadsheetApp.flush();
     },
     segredo: function () { return propriedade_(CHAVE_SEGREDO); },
@@ -1149,11 +1168,14 @@ function preparar_() {
   garantirCabecalho_(reservas);
 
   // Texto simples nas colunas que o Sheets teria coagido — as duas datas
-  // (ver formatarTexto_), o quarto, porque um quarto "007" virava 7, e o nome,
+  // (ver formatarTexto_), o quarto, porque um quarto "007" virava 7, o nome,
   // pela mesma razão: um hóspede chamado "7" é improvável, mas um nome que
   // comece por "=" ou por "+" é lido pelo Sheets como fórmula e a célula
-  // devolve um erro em vez do nome. Mas SÓ enquanto a aba não tiver linhas de
-  // dados.
+  // devolve um erro em vez do nome — e a submissão, que é a mais frágil de
+  // todas: um `submissionID` tem 19 dígitos, o que passa a precisão de um
+  // double, e coagido a número perde os últimos dígitos em silêncio. A chave
+  // deixaria de casar com a da aba das respostas e a reserva nunca apareceria
+  // ao lado do menu. Mas SÓ enquanto a aba não tiver linhas de dados.
   //
   // A razão é uma versão anterior deste script, que deixava o appendRow
   // coagir as strings ISO em células de DATA. Reformatar essa coluna para
@@ -1180,6 +1202,7 @@ function preparar_() {
     formatarTexto_(reservas, COL_CRIADO);
     formatarTexto_(reservas, COL_QUARTO);
     formatarTexto_(reservas, COL_NOME);
+    formatarTexto_(reservas, COL_SUBMISSAO);
   }
 
   var caps = folha_(ABA_CAPACIDADES, true);

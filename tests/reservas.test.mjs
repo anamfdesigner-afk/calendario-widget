@@ -58,17 +58,20 @@ test("capacidadeDe_ devolve -1 para um horário desconhecido", () => {
 // fim: mudar a posição de uma coluna existente tornaria ilegível todas as
 // linhas já guardadas, e uma linha ilegível é um lugar vendido que deixa de
 // contar para a ocupação.
-const CAB = ["token", "data", "horario", "criado", "estado", "quarto", "nome"];
+const CAB = [
+  "token", "data", "horario", "criado", "estado", "quarto", "nome", "submissao"
+];
 
 const CAPS = [
   { horario: "08:00-08:45", vagas: 3 },
   { horario: "08:45-09:30", vagas: 2 }
 ];
 
-test("o cabeçalho da aba Reservas traz quarto e nome no fim", () => {
+test("o cabeçalho da aba Reservas traz quarto, nome e submissao no fim", () => {
   // Com o espelho morto, a folha das respostas tem a identidade mas não a
   // reserva, e o registo tinha a reserva mas não a identidade: ninguém
-  // conseguia dizer quem tinha que horário.
+  // conseguia dizer quem tinha que horário. A `submissao` é a chave que
+  // volta a ligar as duas tabelas.
   const livro = livroFalso({});
   const gsComStub = carregarCom(livro.stubs);
   gsComStub.preparar();
@@ -334,11 +337,12 @@ function ioFalso(reservas, opcoes = {}) {
         estado.expiradas.push(...indices);
         indices.forEach(i => { estado.reservas[i][4] = "expirado"; });
       },
-      confirmar: (indice, quarto, nome) => {
-        estado.confirmadas.push({ indice, quarto, nome });
+      confirmar: (indice, quarto, nome, submissao) => {
+        estado.confirmadas.push({ indice, quarto, nome, submissao });
         estado.reservas[indice][4] = "confirmado";
         estado.reservas[indice][5] = quarto;
         estado.reservas[indice][6] = nome;
+        estado.reservas[indice][7] = submissao;
       },
       segredo: () => estado.segredo,
       formIdEsperado: () => estado.formId,
@@ -360,11 +364,14 @@ test("reservar_ toma um lugar livre", () => {
   assert.equal(estado.acrescentadas.length, 1);
   assert.equal(estado.acrescentadas[0][0], PEDIDO.token);
   assert.equal(estado.acrescentadas[0][4], "activo");
-  // A linha nasce com o quarto e o nome vazios: são-lhe escritos na
-  // confirmação, e é a submissão que os traz.
+  // A linha nasce com o quarto, o nome e a submissão vazios: são-lhe escritos
+  // na confirmação, e é a submissão que os traz. A largura fica presa ao
+  // CABECALHO_RESERVAS: uma linha mais curta do que o cabeçalho devolve
+  // `undefined` na coluna que falta, onde o código conta com "".
   assert.deepEqual(estado.acrescentadas[0].length, CAB.length);
   assert.equal(estado.acrescentadas[0][5], "");
   assert.equal(estado.acrescentadas[0][6], "");
+  assert.equal(estado.acrescentadas[0][7], "");
 });
 
 test("reservar_ é idempotente para o mesmo token e slot", () => {
@@ -1000,10 +1007,14 @@ test("um webhook válido confirma a activa mais antiga e escreve quarto e nome",
   });
   assert.equal(r, "", "um webhook normal não precisa de escrever no registo");
 
-  assert.deepEqual(estado.confirmadas, [{ indice: 2, quarto: "12", nome: "Ana Silva" }]);
+  assert.deepEqual(estado.confirmadas,
+    [{ indice: 2, quarto: "12", nome: "Ana Silva", submissao: SUBMISSAO }]);
   assert.equal(estado.reservas[2][4], "confirmado");
   assert.equal(estado.reservas[2][5], "12");
   assert.equal(estado.reservas[2][6], "Ana Silva");
+  // A chave que liga esta reserva à linha da aba das respostas. Sem ela, o
+  // espelho não tem por onde casar e a reserva nunca aparece ao lado do menu.
+  assert.equal(estado.reservas[2][7], SUBMISSAO);
   assert.equal(estado.reservas[1][4], "activo", "a outra linha fica como estava");
   // E fica a prova de que o webhook funciona: é ela que arma a reconciliação.
   assert.equal(estado.ultimoWebhook, new Date(AGORA).toISOString());
@@ -1022,7 +1033,8 @@ test("uma fantasma velha não absorve a confirmação da reserva verdadeira", ()
   ]);
 
   assert.deepEqual(gs.confirmarWebhook_(webhook(), io), { ok: true, confirmado: true });
-  assert.deepEqual(estado.confirmadas, [{ indice: 2, quarto: "12", nome: "Ana Silva" }]);
+  assert.deepEqual(estado.confirmadas,
+    [{ indice: 2, quarto: "12", nome: "Ana Silva", submissao: SUBMISSAO }]);
   assert.equal(estado.reservas[2][4], "confirmado", "a reserva verdadeira");
   assert.equal(estado.reservas[1][4], "activo", "a fantasma continua a ser uma fantasma");
 
@@ -1378,22 +1390,25 @@ test("criadoMs_ lê tanto a string ISO como um Date da folha", () => {
 
 const CAPS_FOLHA = [["horario", "vagas"], ["08:00-08:45", 3], ["08:45-09:30", 2]];
 
-test("preparar() põe as colunas data, criado, quarto e nome em texto simples", () => {
+test("preparar() põe data, criado, quarto, nome e submissao em texto simples", () => {
   const livro = livroFalso({});
   const gsComStub = carregarCom(livro.stubs);
 
   gsComStub.preparar();
 
-  // COL_DATA = 1, COL_CRIADO = 3, COL_QUARTO = 5 e COL_NOME = 6 → colunas 2,
-  // 4, 6 e 7 da folha, formato "@". O quarto entra porque um quarto "007"
-  // seria coagido a 7; o nome porque um nome começado por "=" ou "+" é lido
-  // como fórmula e a célula devolve um erro em vez do nome.
+  // COL_DATA = 1, COL_CRIADO = 3, COL_QUARTO = 5, COL_NOME = 6 e
+  // COL_SUBMISSAO = 7 → colunas 2, 4, 6, 7 e 8 da folha, formato "@". O quarto
+  // entra porque um quarto "007" seria coagido a 7; o nome porque um nome
+  // começado por "=" ou "+" é lido como fórmula e a célula devolve um erro em
+  // vez do nome; a submissão porque um id de 19 dígitos coagido a número perde
+  // os últimos dígitos e deixa de casar com a aba das respostas.
   const naReservas = livro.formatos.filter(f => f.aba === "Reservas");
   assert.deepEqual(naReservas, [
     { aba: "Reservas", coluna: 2, formato: "@" },
     { aba: "Reservas", coluna: 4, formato: "@" },
     { aba: "Reservas", coluna: 6, formato: "@" },
-    { aba: "Reservas", coluna: 7, formato: "@" }
+    { aba: "Reservas", coluna: 7, formato: "@" },
+    { aba: "Reservas", coluna: 8, formato: "@" }
   ]);
 });
 
@@ -2083,7 +2098,7 @@ test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha"
   assert.deepEqual(chamadasGetRange, [[2, 5]]);
 });
 
-test("ioReal_.confirmar escreve o estado primeiro, e depois quarto e nome", () => {
+test("ioReal_.confirmar escreve o estado primeiro, e depois quarto, nome e submissao", () => {
   // A ordem é deliberada: é o estado que protege o lugar da reconciliação.
   // Se a escrita falhar a meio, mais vale um lugar protegido sem nome do que
   // um nome guardado numa linha que ainda vai ser revendida.
@@ -2099,14 +2114,38 @@ test("ioReal_.confirmar escreve o estado primeiro, e depois quarto e nome", () =
     SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => { flushes++; } }
   });
 
-  gsComStub.ioReal_().confirmar(1, "12", "Ana Silva");
+  gsComStub.ioReal_().confirmar(1, "12", "Ana Silva", SUBMISSAO);
 
+  // índice 1 → linha 2; COL_ESTADO = 4 → coluna 5; COL_QUARTO = 5 → 6;
+  // COL_NOME = 6 → 7; COL_SUBMISSAO = 7 → coluna 8. Um deslize de um aqui
+  // escrevia o id da submissão por cima do nome do hóspede.
   assert.deepEqual(escritas, [
     [2, 5, "confirmado"],
     [2, 6, "12"],
-    [2, 7, "Ana Silva"]
+    [2, 7, "Ana Silva"],
+    [2, 8, SUBMISSAO]
   ]);
   assert.equal(flushes, 1);
+});
+
+test("ioReal_.confirmar grava vazio quando o webhook não trouxe submissionID", () => {
+  // O setValue(undefined) do Apps Script não é o mesmo que uma célula vazia, e
+  // uma célula que o getValues devolva como undefined faz o normalizarId_
+  // trabalhar sobre "undefined" — um id que casaria com outro igualmente vazio.
+  const escritas = [];
+  const folhaFalsa = {
+    getRange: (linha, coluna) => ({
+      setValue: v => { escritas.push([linha, coluna, v]); }
+    })
+  };
+  const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
+  const gsComStub = carregarGs(CAMINHO_GS, {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
+  });
+
+  gsComStub.ioReal_().confirmar(1, "12", "Ana Silva");
+
+  assert.deepEqual(escritas[3], [2, 8, ""]);
 });
 
 test("ioReal_ lê o segredo e o formulário das propriedades do script", () => {
