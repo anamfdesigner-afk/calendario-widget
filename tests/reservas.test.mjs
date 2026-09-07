@@ -1614,6 +1614,20 @@ test("colunaDestino_ encontra a coluna da reserva pelo cabeçalho", () => {
   assert.equal(gs.colunaDestino_([["a", "q137_typeA137"]]), 1);
 });
 
+test("uma pergunta do formulário chamada 'Reserva…' não rouba o lugar ao typeA137", () => {
+  // O nome tolerante devolvia o PRIMEIRO cabeçalho que contivesse "reserva".
+  // Uma pergunta chamada "Reserva especial" à esquerda da coluna do widget
+  // passava a ser o destino — e a guarda "só células vazias" preenchia
+  // precisamente os hóspedes que a tinham deixado em branco, por cima da
+  // resposta deles.
+  const comArmadilha = ["Submission Date", "Reserva especial", "Email", "typeA137"];
+  assert.equal(gs.colunaDestino_([comArmadilha]), 3, "o typeA137 ganha, esteja onde estiver");
+
+  // O nome tolerante continua a servir de rede quando não há mesmo typeA137
+  // nenhum — é assim que a coluna se chama na folha de hoje.
+  assert.equal(gs.colunaDestino_([["Submission Date", "Reserva"]]), 1);
+});
+
 test("sem coluna, as duas devolvem -1 em vez de adivinharem uma posição", () => {
   // É este -1 que DESLIGA a funcionalidade. Adivinhar seria escrever por cima
   // de respostas de hóspedes.

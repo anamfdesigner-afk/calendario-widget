@@ -835,7 +835,18 @@ function confirmarWebhook_(params, io) {
 // escrever depois de a folha mudar, só que na célula errada — e aqui a célula
 // errada é a resposta de um hóspede.
 var CABECALHO_ID_RESPOSTAS = /submission\s*id/i;
-var CABECALHO_DESTINO_RESPOSTAS = /typeA137|reserva/i;
+
+// O destino procura-se em DUAS passagens, e a ordem é que faz a segurança. A
+// primeira exige o nome do widget INTEIRO — `typeA137`, com ou sem o prefixo
+// que a JotForm às vezes lhe põe (`q137_typeA137`). Só quando não existe
+// nenhuma é que se cai para o nome tolerante.
+//
+// Com uma passagem só (/typeA137|reserva/i) ganhava o primeiro cabeçalho que
+// CONTIVESSE "reserva": uma pergunta chamada "Reserva especial" à esquerda da
+// coluna D passava a ser o destino — e a guarda "só células vazias" preenchia
+// precisamente os hóspedes que tinham deixado essa pergunta em branco.
+var CABECALHO_DESTINO_EXACTO = /^(?:[a-z0-9]+_)?typeA137$/i;
+var CABECALHO_DESTINO_TOLERANTE = /reserva/i;
 
 // Quando não há coluna, devolve -1 e a funcionalidade fica DESLIGADA: não se
 // escreve nada em sítio nenhum. Adivinhar a coluna seria escrever por cima de
@@ -854,7 +865,9 @@ function colunaSubmissao_(linhas) {
 }
 
 function colunaDestino_(linhas) {
-  return colunaPorCabecalho_(linhas, CABECALHO_DESTINO_RESPOSTAS);
+  var exacta = colunaPorCabecalho_(linhas, CABECALHO_DESTINO_EXACTO);
+  if (exacta >= 0) return exacta;
+  return colunaPorCabecalho_(linhas, CABECALHO_DESTINO_TOLERANTE);
 }
 
 // O título da coluna encontrada, para o preparar() o DIZER ao dono. Uma
