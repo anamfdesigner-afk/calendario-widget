@@ -1,0 +1,1274 @@
+// ===============================
+// RESERVAS — Web App do Apps Script
+// ===============================
+// Ligado à folha das submissões do JotForm. É esta a peça que torna
+// impossível sobre-reservar: o POST reserva um lugar dentro de um mutex
+// (LockService), coisa que o Sheety nunca conseguiu oferecer.
+//
+// Um lugar tem três estados: `activo` (tomado na submissão, ainda por
+// confirmar), `confirmado` (o webhook da JotForm disse que a submissão se
+// concluiu) e `expirado` (libertado, por abandono ou à mão). A ocupação em
+// vivo são as linhas `activo` MAIS as `confirmado`.
+//
+// Instalação: ver docs/instalacao-reservas.md.
+
+var ABA_RESERVAS = "Reservas";
+var ABA_CAPACIDADES = "Capacidades";
+
+// Colunas da aba Reservas. A ordem é estável: o `quarto` e o `nome` foram
+// ACRESCENTADOS ao fim, porque mudar a posição de uma coluna existente
+// tornaria ilegíveis todas as linhas já guardadas — e uma linha ilegível é
+// um lugar vendido que deixa de contar para a ocupação.
+var COL_TOKEN = 0;
+var COL_DATA = 1;
+var COL_HORARIO = 2;
+var COL_CRIADO = 3;
+var COL_ESTADO = 4;
+var COL_QUARTO = 5;
+var COL_NOME = 6;
+
+var CABECALHO_RESERVAS = ["token", "data", "horario", "criado", "estado", "quarto", "nome"];
+var CABECALHO_CAPACIDADES = ["horario", "vagas"];
+
+var ESTADO_ACTIVO = "activo";
+var ESTADO_CONFIRMADO = "confirmado";
+var ESTADO_EXPIRADO = "expirado";
+
+var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
+
+// O valor que o widget grava, tal como aparece na submissão. Este padrão é
+// SOLTO (casa no meio de um texto qualquer) e serve só para RECUSAR: um valor
+// com cara de reserva nunca serve de nome nem de quarto (ver campoPorNome_).
+// Para DECIDIR que lugar se confirma usa-se o ancorado abaixo.
+var FORMATO_RESERVA = /(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})/;
+
+// Este é o que decide, e é ANCORADO de propósito: o valor da chave tem de ser
+// uma reserva e mais NADA. Um `\d{4}-\d{2}-\d{2} | HH:MM-HH:MM` escondido no
+// meio de uma frase não nomeia lugar nenhum.
+var FORMATO_RESERVA_ANCORADO = /^\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})\s*$/;
+
+// Só para o último recurso: um corpo que não chega como objeto JSON. Com
+// fronteiras em vez de âncoras, que é o mais perto de ancorado que um texto
+// solto permite — a data não pode vir presa a outro dígito, nem o horário
+// continuar noutro.
+var FORMATO_RESERVA_TEXTO =
+  /(?:^|[^\d])(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})(?![\d:])/g;
+
+// As chaves do rawRequest que podem nomear um lugar. A primeira é a resposta
+// do PRÓPRIO widget; a segunda é a tolerância de sempre neste projeto, para o
+// dia em que a JotForm renomear o campo — e é a segunda escolha, nunca a
+// primeira.
+var CHAVE_RESERVA_WIDGET = /typeA137/i;
+var CHAVE_RESERVA_TOLERANTE = /reserva/i;
+
+// Chaves nas ScriptProperties. O segredo do webhook e o ID do formulário
+// vivem AQUI e nunca no ficheiro: este código está num repositório público,
+// e quem descobrisse o segredo podia forjar confirmações e tornar uma
+// reserva falsa impossível de libertar.
+var CHAVE_SEGREDO = "segredoWebhook";
+var CHAVE_FORM_ID = "formIdEsperado";
+var CHAVE_ULTIMO_WEBHOOK = "ultimoWebhook";
+var CHAVE_SUBMISSOES = "submissoesConfirmadas";
+
+// Quantos `submissionID` se guardam para reconhecer uma entrega repetida (ver
+// confirmarWebhook_). Um anel curto nas propriedades do script chega e evita
+// uma coluna nova na folha: o que interessa é apanhar a repetição de minutos
+// ou horas depois, não a de um mês depois — a essa altura a linha já foi
+// servida ao pequeno-almoço.
+var MAX_SUBMISSOES_LEMBRADAS = 50;
+
+// Uma órfã é uma linha `activo` com mais de 20 minutos: se a submissão se
+// tivesse concluído, o webhook já teria chegado e a linha estaria
+// `confirmado`.
+var JANELA_ORFAS_MS = 20 * 60 * 1000;
+
+// Quanto tempo o canal do webhook pode estar CALADO antes de deixarmos de
+// confiar nele (ver webhookEmudeceu_). Seis janelas de órfãs: folgado o
+// suficiente para uma manhã sem submissões nenhumas não desarmar a
+// reconciliação, e curto o suficiente para uma integração apagada não passar
+// um dia inteiro a revender lugares vendidos.
+var LIMITE_WEBHOOK_MUDO_MS = 6 * JANELA_ORFAS_MS;
+
+// ATENÇÃO: acoplado ao ORCAMENTO_RESERVA_MS do widget.js (5 s por
+// tentativa). Tem de ficar CONFORTAVELMENTE DENTRO desse orçamento. Com os
+// 20 s que aqui estavam, sob contenção o widget desistia e falhava fechado
+// — o hóspede era informado de que a reserva falhou — e o servidor tomava
+// o lugar logo depois: o lugar ficava como ocupação fantasma durante 20
+// minutos. Não mexer num dos dois sem mexer no outro.
+var ESPERA_LOCK_MS = 3500;
+
+var ESPERA_LOCK_GET_MS = 5000;
+
+// O webhook não tem hóspede à espera, e uma confirmação perdida é caríssima:
+// a linha fica `activo`, parece órfã 20 minutos depois e o lugar é revendido.
+// Por isso espera mais do que o caminho do hóspede — mas não tanto que a
+// JotForm desista do pedido e a confirmação se perca de outra maneira.
+var ESPERA_LOCK_WEBHOOK_MS = 10000;
+
+// O preparar() e o limparTestes() correm à mão a partir do editor, onde não
+// há hóspede nenhum à espera nem orçamento de cliente a respeitar. Podem
+// esperar muito mais do que o caminho da reserva — e mais vale esperar do
+// que devolver ao dono uma mensagem de "ocupado".
+var ESPERA_LOCK_MANUTENCAO_MS = 20000;
+
+var AVISO_OCUPADO = "A folha está ocupada neste momento. Tente outra vez dentro de um minuto.";
+
+// ===============================
+// CAPACIDADES (funções puras)
+// ===============================
+// A aba Capacidades é a fonte de verdade dos horários E dos limites. A
+// ordem das linhas é a ordem dos botões no widget, por isso devolvemos
+// um array e não um mapa.
+function capacidades_(linhas) {
+  var out = [];
+  var vistos = {};
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var linha = linhas[i] || [];
+    var horario = String(linha[0] == null ? "" : linha[0]).trim();
+    if (!FORMATO_HORARIO.test(horario)) continue;
+    if (vistos[horario]) continue;
+
+    var bruto = linha[1];
+    if (typeof bruto === "string" && bruto.trim() === "") continue;
+    var vagas = Number(bruto);
+    if (!isFinite(vagas) || Math.floor(vagas) !== vagas || vagas < 0) continue;
+
+    vistos[horario] = true;
+    out.push({ horario: horario, vagas: vagas });
+  }
+  return out;
+}
+
+function capacidadeDe_(caps, horario) {
+  for (var i = 0; i < caps.length; i++) {
+    if (caps[i].horario === horario) return caps[i].vagas;
+  }
+  return -1;
+}
+
+// ===============================
+// NORMALIZAÇÃO (funções puras)
+// ===============================
+// O Sheets devolve células de data como Date, e às vezes como ISO
+// completo. Só queremos AAAA-MM-DD.
+//
+// O preparar() força as colunas `data` e `criado` da aba Reservas a texto
+// simples, precisamente para que o ramo da string seja o único que corre em
+// vivo (ver formatarTexto_). O ramo do Date fica por robustez — uma folha
+// preparada à mão, ou uma coluna reformatada por acidente, não pode fazer o
+// script deixar de contar reservas. Esse ramo usa os getters locais, logo
+// depende do fuso do projeto; é por isso que não queremos depender dele.
+function normalizarData_(v) {
+  if (v instanceof Date) {
+    var mes = String(v.getMonth() + 1);
+    var dia = String(v.getDate());
+    if (mes.length < 2) mes = "0" + mes;
+    if (dia.length < 2) dia = "0" + dia;
+    return v.getFullYear() + "-" + mes + "-" + dia;
+  }
+  var t = String(v == null ? "" : v).trim();
+  var m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? m[1] + "-" + m[2] + "-" + m[3] : t;
+}
+
+// O Apps Script tem DOIS fusos independentes: o do projeto (o que o guia
+// manda pôr em Europe/Lisbon) e o da própria folha de cálculo, que o guia
+// nunca mencionava. O getValues() constrói as células de data em Date com o
+// fuso DA FOLHA; o getMonth()/getDate() do normalizarData_ lê-as no fuso DO
+// PROJETO. Quando os dois discordam, uma linha guardada à meia-noite lê-se
+// como o dia anterior, e o ocupados_, o linhaDoToken_ e a escolha da linha a
+// confirmar deslizam todos com ela: lugares revendidos no dia real e
+// bloqueados no dia anterior. O mesmo deslize pode fazer uma reserva
+// recém-criada parecer mais velha, colapsar a janela dos 20 minutos e
+// torná-la elegível a órfã antes de a submissão sequer existir.
+//
+// Em vez de confiar em qualquer das duas definições, guardamos o `criado`
+// como ISO-8601 em UTC (uma string lê-se igual em qualquer fuso) e o
+// preparar() põe as colunas `data` e `criado` em texto simples, para o
+// Sheets não voltar a coagir a string numa célula de data — coisa que o
+// appendRow faz de livre vontade.
+function criadoIso_(ms) {
+  return new Date(ms).toISOString();
+}
+
+// Em vivo o `criado` é sempre a string ISO-8601 UTC escrita pelo criadoIso_,
+// e o Date.parse lê-a sem depender de fuso nenhum. O ramo do Date fica para
+// uma folha antiga ou reformatada à mão.
+function criadoMs_(v) {
+  return v instanceof Date ? v.getTime() : Date.parse(String(v));
+}
+
+function formatarTexto_(aba, coluna) {
+  aba.getRange(1, coluna + 1, aba.getMaxRows(), 1).setNumberFormat("@");
+}
+
+// ===============================
+// OCUPAÇÃO (funções puras)
+// ===============================
+// Esta é a ÚNICA definição de ocupação usada em vivo, e conta os DOIS
+// estados que tomam lugar: `activo` (submetido, à espera do webhook) e
+// `confirmado` (webhook recebido). Contar só as activas devolveria ao mercado
+// todos os lugares já confirmados — exatamente os que são certos.
+function ocupaLugar_(estado) {
+  var e = String(estado == null ? "" : estado).trim();
+  return e === ESTADO_ACTIVO || e === ESTADO_CONFIRMADO;
+}
+
+function ocupados_(linhas, data, horario) {
+  var n = 0;
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var l = linhas[i] || [];
+    if (!ocupaLugar_(l[COL_ESTADO])) continue;
+    if (normalizarData_(l[COL_DATA]) !== data) continue;
+    if (String(l[COL_HORARIO]).trim() !== horario) continue;
+    n++;
+  }
+  return n;
+}
+
+// Algum slot desta data parece cheio? É o gatilho da reconciliação no GET
+// (ver doGet). Slots de capacidade 0 (horário fechado pelo dono) ficam de
+// fora: 0 ocupados já é "cheio" por >=, e sem esta guarda um único horário
+// fechado punha a reconciliação a correr em TODOS os GET, que é
+// exatamente o custo que se quer evitar. Um horário sem lugares também não
+// tem lugares para libertar.
+function algumSlotCheio_(linhas, data, caps) {
+  for (var i = 0; i < (caps || []).length; i++) {
+    if (caps[i].vagas <= 0) continue;
+    if (ocupados_(linhas, data, caps[i].horario) >= caps[i].vagas) return true;
+  }
+  return false;
+}
+
+// A linha viva deste token, em qualquer dos estados que tomam lugar.
+//
+// Incluir o `confirmado` não é zelo a mais. Um hóspede que submeta, receba a
+// confirmação e volte atrás no formulário para submeter outra vez traz o
+// MESMO token: se só olhássemos para as activas, o reservar_ não via a linha
+// já confirmada, criava uma segunda e o hóspede ficava com dois lugares —
+// e o primeiro, por estar `confirmado`, nunca seria libertado.
+function linhaDoToken_(linhas, token) {
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var l = linhas[i] || [];
+    if (!ocupaLugar_(l[COL_ESTADO])) continue;
+    if (String(l[COL_TOKEN]).trim() !== token) continue;
+    return {
+      indice: i,
+      data: normalizarData_(l[COL_DATA]),
+      horario: String(l[COL_HORARIO]).trim()
+    };
+  }
+  return null;
+}
+
+// A linha `activo` que o webhook confirma: a mais antiga DENTRO DA JANELA das
+// órfãs e, se não houver nenhuma lá dentro, a mais antiga de todas.
+//
+// A janela não é zelo: uma linha `activo` abandonada só é libertada quando
+// alguém bate num slot cheio, logo um horário com lugares de sobra acumula
+// fantasmas indefinidamente. Sem a preferência, uma fantasma de três horas
+// absorvia a confirmação da submissão que acabou de chegar — verificado — e a
+// linha verdadeira, deixada `activo`, era expirada 21 minutos depois: o
+// hóspede perdia o lugar que tinha pago e o nome dele ficava colado à
+// fantasma. Pior, ao re-submeter já não havia linha viva do seu token, criava-
+// -se uma segunda e um segundo webhook confirmava-a: dois lugares permanentes
+// para um hóspede, que é o buraco que o linhaDoToken_ fechou.
+//
+// Quando o webhook de uma submissão verdadeira chega, a linha dela tem
+// segundos — está sempre dentro da janela. Isto estreita também o C1.
+//
+// Sem timestamp legível, a linha continua candidata (como último recurso, pela
+// ordem da folha) em vez de ser ignorada — ignorá-la faria o webhook não
+// encontrar nada e não confirmar reserva nenhuma.
+function maisAntigaActiva_(linhas, data, horario, agoraMs, janelaMs) {
+  var naJanela = -1;
+  var naJanelaCriado = Infinity;
+  var qualquer = -1;
+  var qualquerCriado = Infinity;
+
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var l = linhas[i] || [];
+    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+    if (normalizarData_(l[COL_DATA]) !== data) continue;
+    if (String(l[COL_HORARIO]).trim() !== horario) continue;
+
+    var criado = criadoMs_(l[COL_CRIADO]);
+    var legivel = isFinite(criado);
+    if (!legivel) criado = Infinity;
+
+    if (qualquer < 0 || criado < qualquerCriado) {
+      qualquer = i;
+      qualquerCriado = criado;
+    }
+    // Uma linha sem timestamp legível não se sabe se está dentro da janela,
+    // por isso não entra nesta preferência — fica no último recurso.
+    if (legivel && agoraMs - criado <= janelaMs) {
+      if (naJanela < 0 || criado < naJanelaCriado) {
+        naJanela = i;
+        naJanelaCriado = criado;
+      }
+    }
+  }
+
+  return naJanela >= 0 ? naJanela : qualquer;
+}
+
+// ===============================
+// VALIDAÇÃO (função pura)
+// ===============================
+// Devolve os valores JÁ NORMALIZADOS (token, data, horario), e é com ESSES que
+// o reservar_ conta e escreve.
+//
+// Devolvê-los não é comodidade: era a validação a testar `String(pedido.data)`
+// e o reservar_ a usar `pedido.data` em bruto. Um `data` que chegasse como
+// ARRAY (o Apps Script desdobra `data=x&data=y` num array, e um POST JSON pode
+// trazer o que quiser) passava a validação — `String(["2026-09-08"])` dá
+// "2026-09-08" — e depois comparava `!==` diferente de todas as strings
+// guardadas: o ocupados_ contava ZERO, o slot parecia livre e a capacidade
+// ficava sem efeito nenhum. Verificado num slot de um lugar já cheio: com a
+// string recusava, com o array reservava. O `token` tinha o mesmo buraco, e
+// com ele a idempotência: a linha do próprio hóspede não era encontrada e
+// ficava com dois lugares.
+function validarPedido_(pedido, caps, hoje) {
+  var token = String((pedido && pedido.token) || "");
+  var data = String((pedido && pedido.data) || "");
+  var horario = String((pedido && pedido.horario) || "");
+
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(token)) return { ok: false, erro: "token_invalido" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return { ok: false, erro: "data_invalida" };
+  // Comparação de strings basta: em ISO a ordem lexicográfica é cronológica.
+  if (data < hoje) return { ok: false, erro: "data_passada" };
+  if (capacidadeDe_(caps, horario) < 0) return { ok: false, erro: "horario_desconhecido" };
+  return { ok: true, token: token, data: data, horario: horario };
+}
+
+// ===============================
+// RECONCILIAÇÃO (auto-reparação)
+// ===============================
+// Uma reserva que se concretizou é CONFIRMADA pelo webhook da JotForm. Uma
+// abandonada fica `activo` para sempre. Logo, uma linha `activo` com mais de
+// 20 minutos é uma órfã e pode ser libertada: se a submissão se tivesse
+// concluído, o webhook já teria chegado.
+//
+// Isto substituiu uma versão que INFERIA o mesmo comparando contagens com
+// uma coluna da folha das respostas. Essa coluna nunca existiu — o espelho
+// do JotForm nunca escreveu nela (verificado no formulário publicado) — e a
+// inferência trazia consigo toda a espécie de modo de falha silencioso.
+// Agora não se infere: ou o webhook confirmou, ou não.
+//
+// A RECONCILIAÇÃO nunca liberta uma linha `confirmado`: é uma reserva a
+// valer, por muito antiga que seja. Não é o mesmo que dizer que uma linha
+// `confirmado` nunca é libertada — o reservar_ expira-a quando o MESMO token
+// troca de horário (só depois de garantir o novo lugar), e o dono pode
+// escrever `expirado` à mão para cancelar. O que nunca acontece é uma linha
+// confirmada ser libertada por decorrer o tempo.
+function planoReconciliacao_(reservas, agoraMs, janelaMs) {
+  var expirar = [];
+  for (var i = 1; i < (reservas || []).length; i++) {
+    var l = reservas[i] || [];
+    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+
+    var criado = criadoMs_(l[COL_CRIADO]);
+    // Sem timestamp legível não arriscamos: deixamos a linha em paz.
+    if (!isFinite(criado)) continue;
+    if (agoraMs - criado <= janelaMs) continue;
+
+    expirar.push(i);
+  }
+  return expirar;
+}
+
+// Já chegou algum webhook, alguma vez?
+//
+// Esta é a guarda mais importante do ficheiro. Se o webhook estiver mal
+// configurado — segredo errado, URL errado, integração nunca criada — NADA é
+// confirmado, e sem esta guarda TODAS as reservas seriam libertadas 20
+// minutos depois de serem feitas e os lugares revendidos, em silêncio, para
+// o resto da vida da implantação.
+//
+// Enquanto não houver prova de que o webhook funciona, não se liberta nada.
+// O preço é o oposto: as órfãs ficam presas e um slot pode aparecer cheio
+// sem estar. Isso é visível ao dono e corrigível à mão; a sobre-reserva
+// silenciosa não é nem uma coisa nem outra.
+function primeiroWebhookChegou_(io) {
+  if (!io.ultimoWebhook) return false;
+  var v = io.ultimoWebhook();
+  return !!(v && String(v).trim());
+}
+
+// E continua a chegar? A guarda de cima olhava só para a marca ser não-vazia,
+// uma vez, e nunca a comparava com nada. Bastava a instalação ter funcionado
+// um dia: se depois disso a integração fosse apagada, desativada, ou o URL ou
+// o segredo editados na JotForm, nada voltava a ser confirmado, mas a marca
+// ficava lá e a reconciliação ficava ARMADA — e todas as reservas feitas a
+// partir daí eram libertadas aos 20 minutos e os lugares revendidos, em
+// silêncio, para o resto da vida da implantação. Era exactamente a falha que
+// a guarda existia para impedir, coberta só na variante "nunca funcionou".
+//
+// Estar calado, por si, não é sintoma nenhum — de noite não há submissões. O
+// sintoma é "as reservas chegam mas as confirmações não": marca velha E linhas
+// `activo` criadas DEPOIS dela. Nesse caso não se liberta nada, e diz-se
+// porquê no registo, como no caso do webhook que nunca chegou.
+function webhookEmudeceu_(io, reservas, agoraMs) {
+  if (!io.ultimoWebhook) return false;
+  var marca = criadoMs_(io.ultimoWebhook());
+  // Marca ilegível (uma propriedade editada à mão): não é a este guarda que
+  // compete decidir. O primeiroWebhookChegou_ já a aceitou como prova.
+  if (!isFinite(marca)) return false;
+  if (agoraMs - marca <= LIMITE_WEBHOOK_MUDO_MS) return false;
+
+  for (var i = 1; i < (reservas || []).length; i++) {
+    var l = reservas[i] || [];
+    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+    var criado = criadoMs_(l[COL_CRIADO]);
+    if (!isFinite(criado)) continue;
+    if (criado > marca) return true;
+  }
+  return false;
+}
+
+// Ponto de entrada único da reconciliação, partilhado pelo POST e pelo GET.
+// Ter os dois caminhos a chamar isto é deliberado: as guardas não podem
+// divergir, senão fechar um buraco num deles deixa-o aberto no outro.
+// Devolve quantas linhas expirou.
+//
+// `excluirIndice` é a linha de quem está a pedir (-1 quando não há nenhuma).
+// O plano é calculado sobre TODO o registo, pelo que a linha do próprio
+// token pode sair nele — basta o hóspede demorar mais de 20 minutos entre a
+// primeira submissão e uma troca de horário. Sem esta exclusão, um hóspede
+// que tentasse trocar para um horário cheio recebia a recusa E perdia o
+// lugar que já tinha, contra o invariante que o reservar_ documenta: a
+// capacidade é verificada ANTES de libertar a escolha anterior.
+//
+// A recusa por falta de webhook vai para o registo de execução. A recusa em
+// si é deliberada, mas o SILÊNCIO não: quem fosse investigar "por que é que
+// as órfãs nunca são libertadas?" não tinha nada onde olhar.
+function reconciliar_(io, excluirIndice) {
+  if (!primeiroWebhookChegou_(io)) {
+    console.log("Reconciliação não corre: ainda não chegou nenhum webhook da " +
+      "JotForm. Enquanto não chegar nenhum, não se liberta nada — senão um " +
+      "webhook mal configurado revendia todos os lugares já vendidos. " +
+      "Confirme a integração e o segredo (ver preparar()).");
+    return 0;
+  }
+
+  var reservas = io.lerReservas();
+  var agora = io.agora();
+
+  if (webhookEmudeceu_(io, reservas, agora)) {
+    console.log("Reconciliação não corre: o último webhook da JotForm tem " +
+      "mais de " + Math.round(LIMITE_WEBHOOK_MUDO_MS / 60000) + " minutos e " +
+      "há reservas feitas depois dele ainda por confirmar. As reservas estão a " +
+      "chegar e as confirmações não — libertar lugares agora era revender " +
+      "lugares vendidos. Confirme a integração e o segredo (ver preparar()).");
+    return 0;
+  }
+
+  var bruto = planoReconciliacao_(reservas, agora, JANELA_ORFAS_MS);
+
+  var plano = [];
+  for (var i = 0; i < bruto.length; i++) {
+    if (bruto[i] !== excluirIndice) plano.push(bruto[i]);
+  }
+  if (!plano.length) return 0;
+
+  io.expirar(plano);
+  return plano.length;
+}
+
+// ===============================
+// WEBHOOK DA JOTFORM (confirmação)
+// ===============================
+// A JotForm publica cada submissão concluída em POST <URL>?k=<segredo>, com
+// Content-Type form-encoded, e traz `formID` e `rawRequest`.
+
+// Achata um valor do rawRequest num texto. Um campo de nome do JotForm chega
+// como objeto ({first, last}), e é daí que sai "Ana Silva".
+function achatarValor_(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (typeof v !== "object") return "";
+
+  var partes = [];
+  for (var k in v) {
+    if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+    var s = achatarValor_(v[k]);
+    if (s) partes.push(s);
+  }
+  return partes.join(" ").trim();
+}
+
+// As chaves do rawRequest que NÃO são respostas do hóspede: metadados que a
+// JotForm mete no mesmo objeto. Sem esta lista, um `formName` casava
+// /nome|name/i e o registo da cozinha ficava com o título do formulário no
+// lugar do nome do hóspede.
+var CHAVES_NAO_RESPOSTA =
+  /^(slug|path|website|simple_spc|temp|event_?id|formID|formName|formTitle|timeToSubmit|validatedNewRequiredFieldIDs|submission_?id|type|q\d+_typeA\d+)$/i;
+
+// O nome da pergunta dentro de uma chave `q<número>_<nome>`. As respostas do
+// hóspede têm todas esta forma; os metadados não.
+function nomeDaChave_(chave) {
+  var m = String(chave).match(/^q\d+_(.+)$/);
+  return m ? m[1] : "";
+}
+
+// Procura um campo do rawRequest pelo NOME, de forma tolerante — a mesma
+// razão de sempre neste projeto: os nomes dos campos do JotForm mudam e um
+// nome que não casa falha em silêncio. Um valor que seja a própria reserva
+// nunca serve de quarto nem de nome.
+//
+// Em duas passagens: primeiro só as chaves com a forma de resposta
+// (`q<número>_<nome>`), comparando o padrão contra o NOME e não contra a
+// chave inteira; e só se nenhuma servir é que se aceita qualquer chave. Sem a
+// preferência, um campo escondido como `q2_formName` podia ganhar ao nome do
+// hóspede — a decisão ficava com a ordem das chaves, que é a JotForm que
+// escolhe.
+function campoPorNome_(campos, padrao) {
+  return campoEm_(campos, padrao, true) || campoEm_(campos, padrao, false);
+}
+
+function campoEm_(campos, padrao, soRespostas) {
+  for (var k in campos) {
+    if (!Object.prototype.hasOwnProperty.call(campos, k)) continue;
+    if (CHAVES_NAO_RESPOSTA.test(String(k))) continue;
+
+    var nome = nomeDaChave_(k);
+    if (soRespostas) {
+      if (!nome) continue;
+      if (CHAVES_NAO_RESPOSTA.test(nome)) continue;
+      if (!padrao.test(nome)) continue;
+    } else if (!padrao.test(String(k))) {
+      continue;
+    }
+
+    var s = achatarValor_(campos[k]);
+    if (!s) continue;
+    if (FORMATO_RESERVA.test(s)) continue;
+    return s;
+  }
+  return "";
+}
+
+// O campo do quarto NÃO tem "quarto" nem "room" no nome: no rawRequest deste
+// formulário chega como `q6_typeA` (verificado no DOM do formulário
+// publicado). Só com `/quarto|room/` a coluna `quarto` ficava vazia em todas
+// as reservas, e o registo que a cozinha lê de manhã perdia metade da
+// identidade.
+//
+// Um `/typea/i` à solta não serve: `typeA` é o nome genérico da JotForm para
+// uma caixa de texto curta, e num formulário com várias apanhava a errada. O
+// que identifica este campo é o ID DA PERGUNTA — e isso ATA esta constante a
+// ESTE formulário. Se o formulário for reconstruído, o id muda, o `quarto`
+// volta a ficar vazio (em silêncio) e é aqui que se corrige.
+//
+// O `^q6_` só casa na segunda passagem do campoEm_, contra a chave inteira:
+// na primeira, que compara contra o nome da pergunta ("typeA"), não casa
+// nada. Um campo mesmo chamado "quarto" continua a ganhar-lhe.
+var NOME_CAMPO_QUARTO = /quarto|room|^q6_/i;
+var NOME_CAMPO_NOME = /nome|name/i;
+
+// As reservas DISTINTAS escritas nas chaves cujo nome casa `padraoChave`.
+//
+// Distintas, e todas: a decisão de que lugar se confirma não pode depender da
+// ORDEM das chaves. A JotForm ordena o rawRequest pelo id da pergunta, logo
+// qualquer campo escrito pelo hóspede aparece ANTES do campo do widget — e um
+// `match` sobre o texto todo devolvia o primeiro, que era o do hóspede.
+function reservasNasChaves_(campos, padraoChave) {
+  var achadas = [];
+  for (var k in campos) {
+    if (!Object.prototype.hasOwnProperty.call(campos, k)) continue;
+    if (!padraoChave.test(String(k))) continue;
+    var m = achatarValor_(campos[k]).match(FORMATO_RESERVA_ANCORADO);
+    if (!m) continue;
+    var valor = m[1] + " | " + m[2];
+    if (achadas.indexOf(valor) < 0) achadas.push(valor);
+  }
+  return achadas;
+}
+
+// As reservas distintas de um corpo que não é um objeto JSON. Último recurso.
+// O `replace` em vez do `exec` é de propósito: um regex global guardado numa
+// constante do módulo leva lastIndex consigo entre chamadas, e um erro a meio
+// de um ciclo deixava-o apontado para o meio do texto seguinte.
+function reservasNoTexto_(texto) {
+  var achadas = [];
+  String(texto).replace(FORMATO_RESERVA_TEXTO, function (todo, data, horario) {
+    var valor = data + " | " + horario;
+    if (achadas.indexOf(valor) < 0) achadas.push(valor);
+    return todo;
+  });
+  return achadas;
+}
+
+// Uma reserva, ou nada. Duas reservas diferentes no mesmo sítio são uma
+// AMBIGUIDADE e recusam-se: escolher uma delas seria deixar a ordem decidir
+// que lugar se confirma, que é exatamente o buraco que isto fecha. Recusar
+// custa uma confirmação perdida (a linha fica `activo` e o lugar volta ao
+// mercado); escolher mal custa o lugar de outro hóspede, preso para sempre.
+function escolherReserva_(candidatas, onde) {
+  if (candidatas.length === 1) return candidatas[0];
+  if (candidatas.length > 1) {
+    console.log("Webhook ambíguo: encontrei " + candidatas.length +
+      " reservas diferentes " + onde + " (" + candidatas.join(" / ") +
+      "). Não confirmo nenhuma — a ordem dos campos não pode decidir que " +
+      "lugar se confirma.");
+  }
+  return "";
+}
+
+// Lê do rawRequest a reserva e a identidade. Devolve null quando não há
+// reserva legível — e nesse caso não se confirma nada: um POST sem reserva
+// não diz que lugar confirmar.
+//
+// A reserva vem do VALOR de uma chave, nunca do texto todo. A versão anterior
+// procurava o formato no rawRequest inteiro e ficava com a primeira ocorrência:
+// bastava um hóspede escrever `2026-12-25 | 08:00-08:45` na caixa do quarto
+// para o webhook — assinado pela JotForm, sem segredo nenhum pelo meio —
+// confirmar a linha de OUTRO hóspede naquele horário. E como uma linha
+// `confirmado` nunca é libertada pela reconciliação, repetir a manobra prendia
+// o horário todo, para sempre; a linha do próprio atacante ficava `activo` e o
+// lugar dele era revendido 20 minutos depois. Só a resposta do widget pode
+// nomear um lugar.
+function dadosDoWebhook_(bruto) {
+  var texto = String(bruto == null ? "" : bruto);
+
+  var campos = null;
+  try {
+    campos = JSON.parse(texto);
+  } catch (err) {
+    campos = null;
+  }
+  var temChaves = !!(campos && typeof campos === "object");
+
+  var valor;
+  if (temChaves) {
+    valor = escolherReserva_(
+      reservasNasChaves_(campos, CHAVE_RESERVA_WIDGET), "na resposta do widget");
+    // A chave tolerante só entra quando a do widget não existe: um campo do
+    // hóspede chamado "reserva" não pode passar à frente da resposta do widget.
+    if (!valor) {
+      valor = escolherReserva_(
+        reservasNasChaves_(campos, CHAVE_RESERVA_TOLERANTE),
+        "em chaves com 'reserva' no nome");
+    }
+  } else {
+    valor = escolherReserva_(reservasNoTexto_(texto),
+      "num corpo que não é um objeto JSON");
+  }
+  if (!valor) return null;
+
+  var m = valor.match(FORMATO_RESERVA_ANCORADO);
+  var out = { data: m[1], horario: m[2], quarto: "", nome: "" };
+  if (temChaves) {
+    out.quarto = campoPorNome_(campos, NOME_CAMPO_QUARTO);
+    out.nome = campoPorNome_(campos, NOME_CAMPO_NOME);
+  }
+  return out;
+}
+
+// O anel dos `submissionID` já confirmados, guardado como texto simples nas
+// propriedades do script (um id por linha).
+function listaDeSubmissoes_(texto) {
+  var bruto = String(texto == null ? "" : texto).split(/\s+/);
+  var out = [];
+  for (var i = 0; i < bruto.length; i++) {
+    if (bruto[i]) out.push(bruto[i]);
+  }
+  return out;
+}
+
+// O id à cabeça, os mais recentes primeiro, cortado no limite.
+function comSubmissao_(lista, id) {
+  var out = [id];
+  for (var i = 0; i < lista.length; i++) {
+    if (out.length >= MAX_SUBMISSOES_LEMBRADAS) break;
+    if (lista[i] !== id) out.push(lista[i]);
+  }
+  return out;
+}
+
+// O portão: as duas verificações que autenticam o pedido — o segredo e o
+// formulário. Não tocam na folha, e é por isso que o doPost as corre ANTES de
+// pegar no lock.
+//
+// A ordem é a da emenda: primeiro o segredo, depois o formulário, e só depois
+// (já no confirmarWebhook_) a reserva. O que a ordem protege é o que tem de
+// ser verdade antes de uma ESCRITA, e nada aqui escreve.
+//
+// Correr isto antes do lock não é micro-optimização: o endereço do web app é
+// público por desenho, e enquanto o lock vinha primeiro bastava um POST com
+// `rawRequest` e sem `k` para ficar dez segundos na fila do mutex. Alguns por
+// segundo saturavam-no, as reservas verdadeiras (que esperam 3,5 s) recebiam
+// lock_indisponivel, o widget falha fechado de propósito — e o formulário
+// deixava de aceitar reservas.
+function portaoWebhook_(params, io) {
+  var p = params || {};
+
+  var segredo = io.segredo ? io.segredo() : null;
+  if (!segredo) {
+    console.log("Webhook recusado: não há segredo definido nas propriedades " +
+      "do script (" + CHAVE_SEGREDO + "). Sem segredo, qualquer pessoa que " +
+      "descobrisse o endereço podia forjar confirmações.");
+    return { ok: false, erro: "webhook_nao_configurado" };
+  }
+  if (String(p.k == null ? "" : p.k) !== String(segredo)) {
+    console.log("Webhook recusado: segredo (k) errado ou ausente.");
+    return { ok: false, erro: "segredo_invalido" };
+  }
+
+  var formEsperado = io.formIdEsperado ? io.formIdEsperado() : null;
+  if (!formEsperado) {
+    console.log("Webhook recusado: não há ID de formulário definido nas " +
+      "propriedades do script (" + CHAVE_FORM_ID + ").");
+    return { ok: false, erro: "webhook_nao_configurado" };
+  }
+  var formRecebido = String(p.formID == null ? "" : p.formID).trim();
+  if (formRecebido !== String(formEsperado).trim()) {
+    console.log("Webhook recusado: veio do formulário " + formRecebido +
+      " e o esperado é outro.");
+    return { ok: false, erro: "formulario_inesperado" };
+  }
+
+  return { ok: true };
+}
+
+// As três verificações, por esta ordem. Qualquer uma que falhe devolve
+// ok:false e NÃO confirma nada — nem marca que chegou webhook nenhum, senão
+// um POST anónimo qualquer armava a reconciliação.
+//
+// O portão volta a ser corrido aqui, mesmo quando o doPost já o correu: é a
+// única forma de esta função ser segura por si, e é ela que os testes chamam
+// directamente. Duas leituras de propriedades não custam nada.
+//
+// Se não houver linha `activo` para aquele par (o webhook chegou depois de a
+// reconciliação já ter libertado a linha, ou a submissão não passou pelo
+// widget), regista-se e não se cria nada: inventar uma reserva a partir de
+// um webhook seria dar a um POST o poder de ocupar lugares.
+function confirmarWebhook_(params, io) {
+  var p = params || {};
+
+  var portao = portaoWebhook_(p, io);
+  if (!portao.ok) return portao;
+
+  var dados = dadosDoWebhook_(p.rawRequest);
+  if (!dados) {
+    console.log("Webhook recusado: não encontrei no rawRequest nenhuma " +
+      "reserva no formato AAAA-MM-DD | HH:MM-HH:MM.");
+    return { ok: false, erro: "reserva_ilegivel" };
+  }
+
+  // Só aqui, com as três verificações passadas: é este o registo de que o
+  // webhook FUNCIONA, e é ele que permite à reconciliação libertar órfãs
+  // (ver primeiroWebhookChegou_). Guarda-se mesmo quando não há linha para
+  // confirmar — o que se está a provar é que o canal está de pé, e uma
+  // linha em falta não desmente isso.
+  io.gravarUltimoWebhook(io.agora());
+
+  // A MESMA submissão só confirma UMA linha. Uma confirmação é permanente e
+  // não tem como se desfazer, e nada registava de que submissão tinha vindo:
+  // uma entrega repetida — a JotForm a repetir um pedido que expirou no
+  // transporte, coisa que uma espera de lock mais um arranque a frio tornam
+  // plausível, ou o dono a reenviar à mão — encontrava a linha do hóspede já
+  // `confirmado` e confirmava a SEGUINTE mais antiga: a linha de outro
+  // hóspede, com o quarto e o nome do primeiro. Se essa outra tivesse sido
+  // abandonada, o lugar ficava consumido por ninguém, para sempre.
+  var submissao = String(p.submissionID == null ? "" : p.submissionID).trim();
+  var vistas = io.submissoesVistas ? listaDeSubmissoes_(io.submissoesVistas()) : [];
+  if (submissao && vistas.indexOf(submissao) >= 0) {
+    console.log("Webhook repetido: a submissão " + submissao + " já confirmou " +
+      "uma linha. Não confirmo outra — seria prender o lugar de outro hóspede.");
+    return { ok: true, confirmado: false, motivo: "submissao_repetida" };
+  }
+
+  var indice = maisAntigaActiva_(
+    io.lerReservas(), dados.data, dados.horario, io.agora(), JANELA_ORFAS_MS);
+  if (indice < 0) {
+    console.log("Webhook sem linha activa para " + dados.data + " | " +
+      dados.horario + ": nada confirmado e nada criado. Ou a reconciliação " +
+      "já libertou a linha, ou esta submissão não passou pelo widget.");
+    return { ok: true, confirmado: false, motivo: "sem_reserva_activa" };
+  }
+
+  io.confirmar(indice, dados.quarto, dados.nome);
+  // Só depois de haver mesmo uma linha confirmada: uma entrega que não
+  // confirmou nada não gastou nada, e repeti-la não faz mal a ninguém.
+  if (submissao && io.gravarSubmissoesVistas) {
+    io.gravarSubmissoesVistas(comSubmissao_(vistas, submissao).join("\n"));
+  }
+  return { ok: true, confirmado: true };
+}
+
+// ===============================
+// NÚCLEO DA RESERVA
+// ===============================
+// A lógica toda está aqui, com a E/S injetada (io), para poder ser testada
+// em Node sem Apps Script. O doPost só junta o mutex e a folha real.
+//
+// A ordem dos passos importa: a capacidade é verificada ANTES de libertar
+// a escolha anterior do mesmo token. Ao contrário, um hóspede que trocasse
+// para um horário cheio perdia o lugar que já tinha e não ganhava nenhum.
+function reservar_(pedido, io) {
+  var caps = capacidades_(io.lerCapacidades());
+  if (!caps.length) return { ok: false, erro: "capacidades_ilegiveis" };
+
+  var hoje = normalizarData_(new Date(io.agora()));
+  var v = validarPedido_(pedido, caps, hoje);
+  if (!v.ok) return v;
+
+  // Daqui para baixo NADA vem do `pedido` em bruto: só os valores
+  // normalizados pelo validarPedido_. Ver o comentário dele.
+  var token = v.token;
+  var data = v.data;
+  var horario = v.horario;
+  var limite = capacidadeDe_(caps, horario);
+
+  var linhas = io.lerReservas();
+  var existente = linhaDoToken_(linhas, token);
+
+  if (existente && existente.data === data && existente.horario === horario) {
+    return { ok: true, reservado: true, estado: "repetido" };
+  }
+
+  var livre = ocupados_(linhas, data, horario) < limite;
+
+  if (!livre) {
+    // Só aqui vale a pena reconciliar: é a única situação em que libertar
+    // órfãs pode mudar a resposta. Mantém o caminho normal rápido.
+    if (reconciliar_(io, existente ? existente.indice : -1)) {
+      linhas = io.lerReservas();
+      livre = ocupados_(linhas, data, horario) < limite;
+    }
+  }
+
+  if (!livre) return { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
+
+  if (existente) io.expirar([existente.indice]);
+  io.acrescentar([
+    token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO, "", ""
+  ]);
+
+  return { ok: true, reservado: true, estado: existente ? "trocado" : "novo" };
+}
+
+// ===============================
+// E/S REAL NA FOLHA
+// ===============================
+function folha_(nome, criarSeFaltar) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var aba = ss.getSheetByName(nome);
+  if (!aba && criarSeFaltar) aba = ss.insertSheet(nome);
+  return aba;
+}
+
+function lerTudo_(nome) {
+  var aba = folha_(nome, false);
+  if (!aba) return null;
+  var ultima = aba.getLastRow();
+  var colunas = aba.getLastColumn();
+  if (ultima < 1 || colunas < 1) return [];
+  return aba.getRange(1, 1, ultima, colunas).getValues();
+}
+
+function propriedade_(chave) {
+  return PropertiesService.getScriptProperties().getProperty(chave);
+}
+
+function ioReal_() {
+  return {
+    // lerTudo_ devolve null só quando a ABA não existe; uma aba que existe
+    // mas está vazia devolve [], que é verdadeiro em JS e por isso NÃO
+    // ativava o substituto abaixo. Sem este `.length`, a primeira reserva
+    // acrescentada ficava na linha do cabeçalho — invisível para sempre,
+    // porque todas as funções puras começam a contar em i = 1.
+    lerReservas: function () {
+      var linhas = lerTudo_(ABA_RESERVAS);
+      return (linhas && linhas.length) ? linhas : [CABECALHO_RESERVAS];
+    },
+    lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
+    acrescentar: function (linha) {
+      var aba = folha_(ABA_RESERVAS, true);
+      // Espelha a guarda de lerReservas: uma aba nova ou esvaziada não tem
+      // cabeçalho nenhum, e sem ele a linha que estamos prestes a escrever
+      // seria a linha 1 — a mesma que lerReservas trata como cabeçalho.
+      if (aba.getLastRow() < 1) aba.appendRow(CABECALHO_RESERVAS);
+      aba.appendRow(linha);
+      // Sem isto, o doPost pode largar o lock antes do appendRow ficar
+      // visível a uma leitura seguinte, e o pedido seguinte lê a folha sem
+      // ver o lugar que acabou de ser ocupado: as duas reservas ganham o
+      // último lugar, o que é exatamente o que este ficheiro existe para
+      // impedir.
+      SpreadsheetApp.flush();
+    },
+    expirar: function (indices) {
+      var aba = folha_(ABA_RESERVAS, true);
+      for (var i = 0; i < indices.length; i++) {
+        // +1 porque as linhas da folha são 1-based e o índice inclui o cabeçalho.
+        aba.getRange(indices[i] + 1, COL_ESTADO + 1).setValue(ESTADO_EXPIRADO);
+      }
+      SpreadsheetApp.flush();
+    },
+    confirmar: function (indice, quarto, nome) {
+      var aba = folha_(ABA_RESERVAS, true);
+      var linha = indice + 1;
+      // O ESTADO primeiro, o quarto e o nome depois. É o estado que protege
+      // o lugar de ser libertado pela reconciliação: se a escrita falhar a
+      // meio, mais vale um lugar protegido sem nome do que um nome guardado
+      // numa linha que a reconciliação ainda vai revender.
+      aba.getRange(linha, COL_ESTADO + 1).setValue(ESTADO_CONFIRMADO);
+      aba.getRange(linha, COL_QUARTO + 1).setValue(quarto);
+      aba.getRange(linha, COL_NOME + 1).setValue(nome);
+      SpreadsheetApp.flush();
+    },
+    segredo: function () { return propriedade_(CHAVE_SEGREDO); },
+    formIdEsperado: function () { return propriedade_(CHAVE_FORM_ID); },
+    ultimoWebhook: function () { return propriedade_(CHAVE_ULTIMO_WEBHOOK); },
+    gravarUltimoWebhook: function (ms) {
+      PropertiesService.getScriptProperties()
+        .setProperty(CHAVE_ULTIMO_WEBHOOK, criadoIso_(ms));
+    },
+    submissoesVistas: function () { return propriedade_(CHAVE_SUBMISSOES); },
+    gravarSubmissoesVistas: function (texto) {
+      PropertiesService.getScriptProperties().setProperty(CHAVE_SUBMISSOES, texto);
+    },
+    agora: function () { return Date.now(); }
+  };
+}
+
+function resposta_(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ===============================
+// GET: vagas de uma data
+// ===============================
+// É também aqui que a reconciliação corre em regime best-effort, e só
+// quando algum slot da data pedida parece cheio. Sem este caminho, um slot
+// cujos lugares fossem TODOS órfãos apareceria como "Sem vagas", ninguém
+// chegaria a submeter contra ele, e a reconciliação do POST nunca correria:
+// as órfãs ficavam presas para sempre.
+function doGet(e) {
+  var data = String(((e && e.parameter) || {}).data || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+    return resposta_({ ok: false, erro: "data_invalida" });
+  }
+
+  var io = ioReal_();
+  var caps = capacidades_(io.lerCapacidades());
+  if (!caps.length) return resposta_({ ok: false, erro: "capacidades_ilegiveis" });
+
+  var linhas = io.lerReservas();
+
+  // Reconciliar custa uma aquisição de lock e um getValues() inteiro da aba
+  // Reservas. O <input type="date"> dispara `change` por segmento, logo uma
+  // data escrita à mão faz uns três GET, cada um a serializar atrás dos
+  // outros e atrás de todos os outros hóspedes.
+  //
+  // Por isso só reconciliamos quando algum slot desta data PARECE cheio,
+  // que é exatamente o caso que este caminho existe para fechar. A
+  // propriedade de fecho mantém-se intacta; o custo sai do caminho normal.
+  if (algumSlotCheio_(linhas, data, caps)) {
+    var lock = LockService.getScriptLock();
+    if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
+      try {
+        // Ninguém a pedir um lugar: não há linha a proteger.
+        if (reconciliar_(io, -1)) linhas = io.lerReservas();
+      } catch (err) {
+        // Reconciliar é oportunista: falhar aqui não deve impedir o GET —
+        // o hóspede continua a receber as contagens. Mas engolir o erro sem
+        // deixar rasto escondia uma reconciliação que nunca funciona atrás
+        // de um GET que parece perfeito.
+        console.log("Reconciliação no GET falhou (o GET segue): " + err);
+      } finally {
+        lock.releaseLock();
+      }
+    }
+  }
+
+  var slots = [];
+  for (var i = 0; i < caps.length; i++) {
+    var usadas = ocupados_(linhas, data, caps[i].horario);
+    slots.push({
+      horario: caps[i].horario,
+      capacidade: caps[i].vagas,
+      restantes: Math.max(0, caps[i].vagas - usadas)
+    });
+  }
+  return resposta_({ ok: true, data: data, slots: slots });
+}
+
+// ===============================
+// POST: reservar um lugar, ou confirmar pelo webhook
+// ===============================
+// Os dois tipos de pedido distinguem-se pelo CORPO: o do widget é JSON
+// (text/plain) com `acao`; o da JotForm é form-encoded e traz `formID` e
+// `rawRequest`, que o Apps Script desdobra em e.parameter.
+function doPost(e) {
+  var params = (e && e.parameter) || {};
+
+  if (params.formID !== undefined || params.rawRequest !== undefined) {
+    var ioWebhook = ioReal_();
+
+    // AUTENTICAR PRIMEIRO, pegar no lock depois. O endereço é público por
+    // desenho: enquanto o lock vinha primeiro, um POST com `rawRequest` e sem
+    // `k` ficava dez segundos na fila do mutex, e alguns por segundo bastavam
+    // para as reservas verdadeiras (3,5 s de espera) receberem
+    // lock_indisponivel e o formulário deixar de aceitar reservas.
+    // A RESPOSTA AO WEBHOOK NÃO DIZ O QUE FALHOU — é sempre o mesmo {ok:false},
+    // como a emenda especifica. Distinguir `segredo_invalido` de
+    // `formulario_inesperado` dizia a quem estivesse a adivinhar o segredo o
+    // instante exacto em que acertou, e nada aqui o limita em tentativas; o
+    // `webhook_nao_configurado` anunciava até que não há segredo definido. O
+    // detalhe fica no console.log, onde o dono o lê e um estranho não.
+    //
+    // Os códigos do ramo do widget ficam como estão: o widget precisa deles
+    // para dizer ao hóspede o que aconteceu.
+    var portao = portaoWebhook_(params, ioWebhook);
+    if (!portao.ok) return resposta_({ ok: false });
+
+    var lockWebhook = LockService.getScriptLock();
+    // A confirmação corre no MESMO mutex da reserva: lê a folha, escolhe uma
+    // linha e escreve-a. Sem o lock, escolhia uma linha que um doPost a
+    // decorrer já tinha expirado.
+    if (!lockWebhook.tryLock(ESPERA_LOCK_WEBHOOK_MS)) {
+      console.log("Webhook não conseguiu o lock: nada confirmado.");
+      return resposta_({ ok: false });
+    }
+    try {
+      var r = confirmarWebhook_(params, ioWebhook);
+      return resposta_(r.ok ? r : { ok: false });
+    } catch (err) {
+      console.log("Webhook falhou: " + err);
+      return resposta_({ ok: false });
+    } finally {
+      lockWebhook.releaseLock();
+    }
+  }
+
+  // Um webhook que chegue de outra maneira (multipart, p.ex., que o Apps
+  // Script não desdobra em e.parameter) cai aqui e não confirma nada. E sem
+  // confirmações a reconciliação fica desarmada para sempre, sem nada onde
+  // olhar. Por isso deixamos rasto em vez de recusar em silêncio.
+  var conteudo = String((e && e.postData && e.postData.contents) || "");
+  if (conteudo.indexOf("rawRequest") >= 0 || conteudo.indexOf("formID") >= 0) {
+    console.log("Este POST parece um webhook da JotForm, mas não trouxe " +
+      "formID nem rawRequest em e.parameter (tipo: " +
+      ((e && e.postData && e.postData.type) || "desconhecido") +
+      "). Nada foi confirmado.");
+  }
+
+  var pedido;
+  try {
+    pedido = JSON.parse(conteudo || "{}");
+  } catch (err2) {
+    return resposta_({ ok: false, erro: "corpo_invalido" });
+  }
+  // O !pedido não é zelo a mais: JSON.parse("null") tem SUCESSO, e o
+  // pedido.acao aqui — já fora do try — levantava um TypeError. O Apps
+  // Script respondia com uma página HTML de erro em vez de JSON, e o widget
+  // não sabe ler isso. Vale o mesmo para "123" ou "\"texto\"".
+  if (!pedido || pedido.acao !== "reservar") {
+    return resposta_({ ok: false, erro: "acao_desconhecida" });
+  }
+
+  var lock = LockService.getScriptLock();
+  // É este mutex que torna impossível duas submissões simultâneas
+  // intercalarem-se e ficarem as duas com o último lugar.
+  if (!lock.tryLock(ESPERA_LOCK_MS)) {
+    return resposta_({ ok: false, erro: "lock_indisponivel" });
+  }
+  try {
+    return resposta_(reservar_(pedido, ioReal_()));
+  } catch (err3) {
+    return resposta_({ ok: false, erro: "erro_interno" });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ===============================
+// INSTALAÇÃO E LIMPEZA
+// ===============================
+// O editor do Apps Script NÃO mostra o valor devolvido por uma função —
+// só mostra o painel "Registo de execução". Sem este console.log, a
+// mensagem que o dono tem de CONFIRMAR na instalação (se o webhook está
+// configurado, se já chegou algum) não aparecia em sítio nenhum e a
+// confirmação era impossível.
+function relatar_(mensagem) {
+  console.log(mensagem);
+  return mensagem;
+}
+
+// Corre UMA vez a partir do editor. Cria as abas e semeia as capacidades
+// atuais. É preferível a pedir ao dono para criar abas à mão.
+function preparar() {
+  var lock = LockService.getScriptLock();
+  // O mesmo lock do doPost. O preparar() acrescenta linhas e o limparTestes()
+  // apaga-as; sem o lock, um deles corre a meio de um doPost que já leu a
+  // folha e já calculou o seu plano de reconciliação, e o setValue do
+  // expirar vai marcar `expirado` na linha errada — uma reserva real de um
+  // hóspede que nada tem a ver com isto.
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return relatar_(AVISO_OCUPADO);
+  try {
+    return relatar_(preparar_());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Uma aba Reservas de uma versão anterior tem o cabeçalho antigo, de cinco
+// colunas. As colunas são lidas por POSIÇÃO e não pelo nome, logo o script
+// funciona de qualquer maneira — mas o dono ficava sem saber o que são as
+// duas colunas novas que aparecem cheias de nomes de hóspedes.
+//
+// A guarda é sobre o CONTEÚDO da linha 1, não sobre o número de colunas. A
+// versão anterior saía cedo quando getLastColumn() >= 7, e numa aba antiga
+// bastava a primeira reserva (que já é escrita com sete valores) para o
+// getLastColumn passar a 7: os títulos `quarto` e `nome` nunca chegavam a ser
+// escritos, que é precisamente o caso para que isto existe.
+function cabecalhoCerto_(linha) {
+  for (var i = 0; i < CABECALHO_RESERVAS.length; i++) {
+    var celula = String((linha || [])[i] == null ? "" : (linha || [])[i]).trim();
+    if (celula !== CABECALHO_RESERVAS[i]) return false;
+  }
+  return true;
+}
+
+function garantirCabecalho_(aba) {
+  var colunas = Math.max(aba.getLastColumn(), CABECALHO_RESERVAS.length);
+  var linha1 = aba.getRange(1, 1, 1, colunas).getValues()[0];
+  if (cabecalhoCerto_(linha1)) return;
+  aba.getRange(1, 1, 1, CABECALHO_RESERVAS.length).setValues([CABECALHO_RESERVAS]);
+}
+
+function preparar_() {
+  var reservas = folha_(ABA_RESERVAS, true);
+  if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
+  garantirCabecalho_(reservas);
+
+  // Texto simples nas colunas que o Sheets teria coagido — as duas datas
+  // (ver formatarTexto_), o quarto, porque um quarto "007" virava 7, e o nome,
+  // pela mesma razão: um hóspede chamado "7" é improvável, mas um nome que
+  // comece por "=" ou por "+" é lido pelo Sheets como fórmula e a célula
+  // devolve um erro em vez do nome. Mas SÓ enquanto a aba não tiver linhas de
+  // dados.
+  //
+  // A razão é uma versão anterior deste script, que deixava o appendRow
+  // coagir as strings ISO em células de DATA. Reformatar essa coluna para
+  // texto simples não converte a célula de volta à string original: uma
+  // célula de data formatada como texto pode devolver o NÚMERO DE SÉRIE do
+  // Sheets no getValues(), e então o normalizarData_ dá "46000". Todas as
+  // reservas guardadas ficariam invisíveis para o ocupados_ e os lugares
+  // delas seriam vendidos outra vez — exatamente o desastre que este
+  // ficheiro existe para impedir, e desencadeado por um simples segundo
+  // preparar().
+  //
+  // Não foi possível confirmar em Apps Script a partir daqui, por isso
+  // tratamos como risco e não como facto: com uma aba já com dados não há
+  // ganho nenhum em formatar (as linhas antigas já lá estão como estão, e as
+  // novas trazem a string ISO do criadoIso_), e há este risco todo.
+  //
+  // Nota de horizonte: o formatarTexto_ cobre as linhas até ao
+  // getMaxRows() do momento — 1000 numa aba nova. Uma folha que passe disso
+  // volta a ter as colunas em formato automático nas linhas de baixo. Não é
+  // fatal (a coluna `criado` guarda ISO em UTC e o normalizarData_ ainda
+  // aceita Date), mas quem lá chegar deve saber que a garantia tem limite.
+  if (reservas.getLastRow() <= 1) {
+    formatarTexto_(reservas, COL_DATA);
+    formatarTexto_(reservas, COL_CRIADO);
+    formatarTexto_(reservas, COL_QUARTO);
+    formatarTexto_(reservas, COL_NOME);
+  }
+
+  var caps = folha_(ABA_CAPACIDADES, true);
+  if (caps.getLastRow() < 1) {
+    caps.appendRow(CABECALHO_CAPACIDADES);
+    caps.appendRow(["08:00-08:45", 3]);
+    caps.appendRow(["08:45-09:30", 2]);
+    caps.appendRow(["09:30-10:15", 3]);
+    caps.appendRow(["10:15-11:00", 2]);
+  }
+
+  // O estado da configuração do webhook, para o dono CONFIRMAR na
+  // instalação. O segredo é reportado como "definido" e NUNCA impresso: este
+  // registo de execução é copiável e vai aparecer em capturas de ecrã.
+  var io = ioReal_();
+  var ultimo = io.ultimoWebhook();
+  return "Abas prontas. Segredo do webhook: " +
+    (io.segredo() ? "definido" : "EM FALTA") +
+    ". Formulário esperado: " + (io.formIdEsperado() ? io.formIdEsperado() : "EM FALTA") +
+    ". Último webhook recebido: " + (ultimo ? ultimo : "NUNCA") +
+    (ultimo ? "" : " (enquanto for NUNCA, nenhum lugar é libertado)") + ".";
+}
+
+// Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
+// de escrever à mão na folha: um clique mal dado já apagou o email de um
+// hóspede real.
+function limparTestes() {
+  var lock = LockService.getScriptLock();
+  // O deleteRow é a operação mais perigosa do ficheiro: desloca todos os
+  // índices abaixo dele. Ver o comentário do preparar().
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return relatar_(AVISO_OCUPADO);
+  try {
+    return relatar_(limparTestes_());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function limparTestes_() {
+  var aba = folha_(ABA_RESERVAS, false);
+  if (!aba) return "Aba Reservas não existe.";
+  var linhas = lerTudo_(ABA_RESERVAS) || [];
+  var apagadas = 0;
+  for (var i = linhas.length - 1; i >= 1; i--) {
+    if (String((linhas[i] || [])[COL_TOKEN]).indexOf("conc-teste-") === 0) {
+      aba.deleteRow(i + 1);
+      apagadas++;
+    }
+  }
+  return "Linhas de teste apagadas: " + apagadas;
+}
+
+// ===============================
+// EXPORTAÇÃO PARA OS TESTES
+// ===============================
+// No Apps Script "module" não existe, logo este bloco é ignorado. Em Node
+// é o que dá acesso às funções puras (ver tests/carregar.mjs).
+if (typeof module !== "undefined") {
+  module.exports = {
+    capacidades_: capacidades_,
+    capacidadeDe_: capacidadeDe_,
+    normalizarData_: normalizarData_,
+    criadoIso_: criadoIso_,
+    criadoMs_: criadoMs_,
+    ocupaLugar_: ocupaLugar_,
+    ocupados_: ocupados_,
+    algumSlotCheio_: algumSlotCheio_,
+    linhaDoToken_: linhaDoToken_,
+    maisAntigaActiva_: maisAntigaActiva_,
+    validarPedido_: validarPedido_,
+    planoReconciliacao_: planoReconciliacao_,
+    primeiroWebhookChegou_: primeiroWebhookChegou_,
+    webhookEmudeceu_: webhookEmudeceu_,
+    reconciliar_: reconciliar_,
+    achatarValor_: achatarValor_,
+    campoPorNome_: campoPorNome_,
+    NOME_CAMPO_QUARTO: NOME_CAMPO_QUARTO,
+    NOME_CAMPO_NOME: NOME_CAMPO_NOME,
+    dadosDoWebhook_: dadosDoWebhook_,
+    confirmarWebhook_: confirmarWebhook_,
+    reservar_: reservar_,
+    preparar: preparar,
+    doGet: doGet,
+    doPost: doPost,
+    limparTestes: limparTestes,
+    // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
+    // testes de unidade. É exportada mesmo assim para pinar, com uma folha
+    // e um SpreadsheetApp esboçados, a aritmética de índices e as chamadas
+    // a flush() que só se veem aqui — ver os testes de "ioReal_".
+    ioReal_: ioReal_
+  };
+}
