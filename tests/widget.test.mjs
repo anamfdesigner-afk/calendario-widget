@@ -13,7 +13,10 @@ function resposta(corpo, ok = true, status = 200) {
   return { ok: ok, status: status, json: async () => corpo };
 }
 
-// Regista tudo o que o widget diz ao JotForm.
+// Regista tudo o que o widget diz ao JotForm. Os setFieldsValueBy* estão cá
+// para PROVAR que ninguém lhes toca: o espelho foi apagado por nunca ter
+// funcionado, e voltar a escrever por ali seria voltar a acreditar num
+// caminho que não avisa quando falha.
 function jotformFalso() {
   const chamadas = [];
   const subs = {};
@@ -29,6 +32,11 @@ function jotformFalso() {
     setFieldsValueByLabel(v) { chamadas.push(["setFieldsValueByLabel", v]); }
   };
   return { chamadas, subs, api };
+}
+
+// As respostas ao formulário. O invariante é que há sempre exatamente uma.
+function respostasAoFormulario(chamadas) {
+  return chamadas.filter(c => c[0] === "sendSubmit" || c[0] === "showWidgetError");
 }
 
 function montar(stubs = {}) {
@@ -213,10 +221,12 @@ test("uma resposta velha não desenha por cima da mais recente", async () => {
 // ===============================
 // SELECIONAR
 // ===============================
-test("selecionar manda o valor pelo sendData — é por aí que o webhook o lê", () => {
+test("selecionar manda o valor pelo sendData — é por aí que o webhook o lê", async () => {
   // NÃO é código morto: a resposta do próprio widget (q137_typeA137) é o
   // único sítio de onde o webhook consegue tirar que lugar confirmar.
-  const { widget, jf } = montar();
+  const { widget, jf } = montar({
+    fetch: fetchFalso({ get: async () => resposta({ ok: true, slots: SLOTS_EXEMPLO }) })
+  });
 
   widget.selecionar("2026-09-08", "08:00-08:45");
 
@@ -227,13 +237,19 @@ test("selecionar manda o valor pelo sendData — é por aí que o webhook o lê"
   assert.equal(widget.valorEscolhido(), "2026-09-08 | 08:00-08:45");
 });
 
-test("o espelho num campo normal desapareceu de vez", () => {
+test("o espelho num campo normal desapareceu de vez", async () => {
   // Verificado no formulário publicado: o campo Reserva ficava sempre vazio e
   // o setFieldsValueBy* nunca dava erro. Código que finge funcionar é pior do
   // que código nenhum — foi o que escondeu este bug durante meses.
-  const { widget, jf } = montar();
+  const { widget, jf } = montar({
+    fetch: fetchFalso({
+      get: async () => resposta({ ok: true, slots: SLOTS_EXEMPLO }),
+      post: async () => resposta({ ok: true, reservado: true, estado: "novo" })
+    })
+  });
 
   widget.selecionar("2026-09-08", "08:00-08:45");
+  await widget.tratarSubmit();
 
   assert.deepEqual(jf.chamadas.filter(c => /setFieldsValue/.test(c[0])), []);
 });
@@ -251,6 +267,229 @@ test("selecionar ignora um botão cuja data já não é a que está no ecrã", a
   // E recarrega os horários da data que o hóspede está mesmo a ver.
   assert.equal(fetchStub.pedidos.length, 1);
   assert.equal(fetchStub.pedidos[0].url, widget.RESERVAS_URL + "?data=2026-09-11");
+});
+
+// ===============================
+// PEDIDO DE RESERVA
+// ===============================
+test("pedirReserva vai em text/plain, e nunca em application/json", async () => {
+  // O Apps Script não tem doOptions: com application/json o browser faz um
+  // preflight que ninguém responde e o pedido nem sai da máquina do hóspede.
+  const fetchStub = fetchFalso({
+    post: async () => resposta({ ok: true, reservado: true, estado: "novo" })
+  });
+  const { widget } = montar({ fetch: fetchStub });
+
+  await widget.pedirReserva("2026-09-08", "08:45-09:30");
+
+  const p = fetchStub.pedidos[0];
+  assert.equal(p.url, widget.RESERVAS_URL);
+  assert.equal(p.opcoes.method, "POST");
+  assert.equal(p.opcoes.headers["Content-Type"], "text/plain;charset=utf-8");
+  assert.equal(p.opcoes.redirect, "follow");
+
+  const corpo = JSON.parse(p.opcoes.body);
+  assert.equal(corpo.acao, "reservar");
+  assert.equal(corpo.data, "2026-09-08");
+  assert.equal(corpo.horario, "08:45-09:30");
+  assert.match(corpo.token, PADRAO_TOKEN);
+});
+
+test("pedirReserva rebenta num HTTP que não seja 2xx", async () => {
+  const { widget } = montar({
+    fetch: fetchFalso({ post: async () => resposta({}, false, 503) })
+  });
+  await assert.rejects(() => widget.pedirReserva("2026-09-08", "08:00-08:45"), /HTTP 503/);
+});
+
+test("comPrazo desiste com 'prazo esgotado'", async () => {
+  const { widget } = montar();
+  await assert.rejects(
+    () => widget.comPrazo(new Promise(() => {}), 5),
+    /prazo esgotado/
+  );
+});
+
+test("comPrazo apaga o temporizador quando a promessa responde", async () => {
+  // Um temporizador esquecido rejeitava DEPOIS de já termos respondido ao
+  // formulário, e em Node deixava o processo de testes pendurado.
+  const limpos = [];
+  const { widget } = montar({
+    setTimeout: () => 7,
+    clearTimeout: (id) => limpos.push(id)
+  });
+
+  await widget.comPrazo(Promise.resolve("ok"), 100);
+  assert.deepEqual(limpos, [7]);
+});
+
+test("reservarLugar repete uma vez — o servidor é idempotente pelo token", async () => {
+  let n = 0;
+  const { widget } = montar({
+    fetch: fetchFalso({
+      post: async () => {
+        n += 1;
+        if (n === 1) throw new Error("rede");
+        return resposta({ ok: true, reservado: true, estado: "repetido" });
+      }
+    })
+  });
+
+  const r = await widget.reservarLugar("2026-09-08", "08:00-08:45");
+
+  assert.equal(n, 2);
+  assert.equal(r.estado, "repetido");
+});
+
+test("reservarLugar desiste ao fim de duas tentativas, e não de três", async () => {
+  let n = 0;
+  const { widget } = montar({
+    fetch: fetchFalso({ post: async () => { n += 1; throw new Error("rede"); } })
+  });
+
+  await assert.rejects(() => widget.reservarLugar("2026-09-08", "08:00-08:45"), /rede/);
+  assert.equal(n, 2);
+});
+
+// ===============================
+// SUBMISSÃO
+// ===============================
+// O formulário fica à espera da resposta do widget. Todos os testes daqui
+// para baixo verificam a MESMA coisa além do seu assunto: que sai daqui
+// exatamente uma resposta.
+function comEscolha(stubs) {
+  const montado = montar(stubs);
+  montado.widget.selecionar("2026-09-08", "08:00-08:45");
+  montado.jf.chamadas.length = 0;
+  return montado;
+}
+
+test("submeter sem escolha, sendo obrigatório, mostra o erro e não deixa passar", async () => {
+  const { widget, jf } = montar();
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["showWidgetError", "Escolha uma data e um horário."]
+  ]);
+});
+
+test("submeter sem escolha, não sendo obrigatório, deixa passar em branco", async () => {
+  const trocar = (fonte) => {
+    const novo = fonte.replace("const OBRIGATORIO = true;", "const OBRIGATORIO = false;");
+    assert.notEqual(novo, fonte, "a linha do OBRIGATORIO mudou de forma");
+    return novo;
+  };
+  const { widget, jf } = montar({ transformarFonte: trocar });
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["sendSubmit", { valid: true, value: "" }]
+  ]);
+});
+
+test("com o lugar reservado, a submissão passa com o valor escolhido", async () => {
+  const { widget, jf } = comEscolha({
+    fetch: fetchFalso({
+      post: async () => resposta({ ok: true, reservado: true, estado: "novo" })
+    })
+  });
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["sendSubmit", { valid: true, value: "2026-09-08 | 08:00-08:45" }]
+  ]);
+});
+
+test("um horário que ficou cheio recusa, limpa a escolha e recarrega os horários", async () => {
+  const fetchStub = fetchFalso({
+    get: async () => resposta({ ok: true, slots: SLOTS_EXEMPLO }),
+    post: async () => resposta({ ok: true, reservado: false, motivo: "cheio", restantes: 0 })
+  });
+  const { widget, jf } = comEscolha({ fetch: fetchStub });
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["showWidgetError", "Esse horário acabou de ficar sem vagas. Escolha outro."]
+  ]);
+  // O showWidgetError já envia sendSubmit({valid:false}) por dentro.
+  assert.deepEqual(jf.chamadas.filter(c => c[0] === "sendSubmit"), []);
+  assert.equal(widget.valorEscolhido(), "");
+  assert.ok(
+    fetchStub.pedidos.some(p => String(p.url).indexOf("?data=2026-09-08") >= 0),
+    "devia ter recarregado os horários do dia"
+  );
+});
+
+test("uma data que já passou tem mensagem própria", async () => {
+  // Escolher hoje às 23:50 e submeter às 00:01 dava um "tente novamente" que
+  // nunca ia funcionar, numa data que o próprio widget tinha oferecido.
+  const { widget, jf } = comEscolha({
+    fetch: fetchFalso({ post: async () => resposta({ ok: false, erro: "data_passada" }) })
+  });
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["showWidgetError", "Essa data já passou. Escolha outra."]
+  ]);
+});
+
+test("um ok:false qualquer falha FECHADA", async () => {
+  const { widget, jf } = comEscolha({
+    fetch: fetchFalso({ post: async () => resposta({ ok: false, erro: "lock_indisponivel" }) })
+  });
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["showWidgetError", "Não foi possível confirmar a reserva. Tente novamente."]
+  ]);
+  assert.deepEqual(jf.chamadas.filter(c => c[0] === "sendSubmit"), []);
+});
+
+test("sem resposta do servidor depois da repetição, falha FECHADA", async () => {
+  // Ao contrário da revalidação que isto substituiu, aqui não se deixa
+  // passar: sem resposta não há lugar tomado, e deixar passar era vender um
+  // lugar que ninguém guardou.
+  let n = 0;
+  const { widget, jf } = comEscolha({
+    fetch: fetchFalso({ post: async () => { n += 1; throw new Error("rede"); } })
+  });
+
+  await widget.tratarSubmit();
+
+  assert.equal(n, 2);
+  assert.deepEqual(respostasAoFormulario(jf.chamadas), [
+    ["showWidgetError", "Não foi possível confirmar a reserva. Tente novamente."]
+  ]);
+});
+
+test("o subscritor do submit responde mesmo quando alguma coisa estoura", async () => {
+  // Sem o .catch a responder, uma exceção inesperada deixava o hóspede preso
+  // no botão de submeter, à espera de uma resposta que nunca chegava.
+  const jf = jotformFalso();
+  let primeira = true;
+  jf.api.sendSubmit = (d) => {
+    jf.chamadas.push(["sendSubmit", d]);
+    if (primeira) { primeira = false; throw new Error("postMessage falhou"); }
+  };
+  const { widget } = carregarWidget(CAMINHO, {
+    JFCustomWidget: jf.api,
+    fetch: fetchFalso({
+      post: async () => resposta({ ok: true, reservado: true, estado: "novo" })
+    })
+  });
+  widget.selecionar("2026-09-08", "08:00-08:45");
+  jf.chamadas.length = 0;
+
+  jf.subs.submit();
+  await new Promise(r => setTimeout(r, 20));
+
+  assert.deepEqual(jf.chamadas.map(c => c[0]), ["sendSubmit", "showWidgetError"]);
 });
 
 test("o painel de diagnóstico só aparece com ?debug=1", () => {

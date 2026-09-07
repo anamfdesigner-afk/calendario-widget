@@ -150,8 +150,15 @@ export function carregarWidget(caminho, stubs = {}) {
     n => (n in stubs ? stubs[n] : padroes[n])
   );
 
+  // O OBRIGATORIO é uma constante do ficheiro e não há maneira de o mudar de
+  // fora. Para exercitar o ramo "não obrigatório" da submissão, o teste troca
+  // a linha na FONTE — e confirma que a troca aconteceu, senão passaria a
+  // testar o outro ramo em silêncio.
+  let fonte = readFileSync(caminho, "utf8");
+  if (typeof stubs.transformarFonte === "function") fonte = stubs.transformarFonte(fonte);
+
   const mod = { exports: {} };
-  const fn = new Function("module", ...AMBIENTE_WIDGET, readFileSync(caminho, "utf8"));
+  const fn = new Function("module", ...AMBIENTE_WIDGET, fonte);
   fn(mod, ...valores);
   return { widget: mod.exports, documento };
 }

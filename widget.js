@@ -17,11 +17,15 @@ const RESERVAS_URL =
 // Bloquear submissão sem horário escolhido
 const OBRIGATORIO = true;
 
-// Quanto tempo esperamos pela revalidação das vagas na submissão.
-// Se o servidor não responder neste tempo, DEIXAMOS PASSAR: bloquear
-// todas as reservas porque a API está lenta é pior do que o risco de
-// uma reserva a mais.
-const TIMEOUT_REVALIDACAO_MS = 4000;
+// Orçamento de CADA tentativa de reservar.
+//
+// ATENÇÃO: acoplado ao ESPERA_LOCK_MS do reservas.gs (3500 ms de espera pelo
+// mutex), que está deliberadamente DENTRO deste orçamento. Se este número
+// descer abaixo do do servidor, o widget desiste enquanto o servidor ainda
+// está a escrever a linha: o hóspede é informado de que a reserva falhou e o
+// lugar fica na folha na mesma, como ocupação fantasma até a reconciliação o
+// libertar. Não mexer num sem mexer no outro.
+const ORCAMENTO_RESERVA_MS = 5000;
 
 // Painel de diagnóstico. Fica DESLIGADO para quem preenche o formulário
 // (aparecia como uma caixa vermelha dentro do formulário publicado).
@@ -263,28 +267,126 @@ function iniciarUI() {
 iniciarUI();
 
 // ===============================
-// REVALIDAÇÃO NA SUBMISSÃO
+// RESERVAR O LUGAR NA SUBMISSÃO
 // ===============================
-// As vagas são lidas quando o dia é aberto. Entre esse momento e a
-// submissão pode passar muito tempo, e outra pessoa pode ficar com o
-// último lugar — dois hóspedes viam "1 vaga" e ambos reservavam.
-// Aqui voltamos a contar imediatamente antes de submeter.
+// Promise.race com rejeição. Nunca esperamos por um pedido para sempre: o
+// formulário está à espera da nossa resposta e um fetch pendurado prendia o
+// hóspede no botão de submeter.
+function comPrazo(promessa, ms) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error("prazo esgotado")), ms);
+    promessa.then(
+      v => { clearTimeout(id); resolve(v); },
+      e => { clearTimeout(id); reject(e); }
+    );
+  });
+}
+
+async function pedirReserva(data, horario) {
+  const resposta = await fetch(RESERVAS_URL, {
+    method: "POST",
+    // text/plain de propósito. É o único Content-Type que mantém isto um
+    // "simple request" e evita o preflight de CORS: o Apps Script não tem
+    // doOptions e NÃO SABE responder a um OPTIONS. Com application/json o
+    // pedido nem chega a sair do browser.
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    // O Web App responde 302 para script.googleusercontent.com; é no destino
+    // que está o corpo e o cabeçalho de CORS.
+    redirect: "follow",
+    body: JSON.stringify({
+      acao: "reservar",
+      token: TOKEN,
+      data: data,
+      horario: horario
+    })
+  });
+  if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
+  return resposta.json();
+}
+
+// Uma repetição, e só uma.
 //
-// LIMITE: isto encurta a janela, não a fecha. Duas submissões
-// simultâneas podem passar as duas na verificação. Fechar a janela por
-// completo exige uma reserva atómica do lado do servidor.
-async function slotAindaTemVagas(date, slot) {
-  try {
-    const slots = await buscarVagas(date);
-    const def = slots.find(s => s && s.horario === slot);
-    const restantes = def ? Number(def.restantes) : 0;
-    log(`Revalidação: ${slot} em ${date} -> ${restantes} vaga(s).`);
-    return { cheio: !(restantes > 0) };
-  } catch (e) {
-    // Falha de rede: não bloqueamos (ver TIMEOUT_REVALIDACAO_MS).
-    log("Revalidação falhou (" + e.message + "): a deixar passar.");
-    return { cheio: false };
+// É segura porque o servidor é idempotente pelo token: se o primeiro pedido
+// chegou e só a resposta se perdeu, o segundo encontra a linha do mesmo
+// token, devolve estado "repetido" e NÃO consome um segundo lugar.
+async function reservarLugar(data, horario) {
+  let ultimoErro;
+  for (let tentativa = 1; tentativa <= 2; tentativa++) {
+    try {
+      return await comPrazo(pedirReserva(data, horario), ORCAMENTO_RESERVA_MS);
+    } catch (e) {
+      ultimoErro = e;
+      log(`Tentativa ${tentativa} de reservar falhou: ${e.message}`);
+    }
   }
+  throw ultimoErro;
+}
+
+// O corpo do handler de submissão, separado para poder ser testado.
+//
+// INVARIANTE: sai daqui por exatamente UM de dois caminhos — sendSubmit ou
+// showWidgetError. O formulário fica à espera da nossa resposta (a biblioteca
+// envia primeiro um {initial:true}); um ramo que devolva sem responder prende
+// o hóspede no botão de submeter para sempre. E o showWidgetError já envia
+// sendSubmit({valid:false}) por dentro, por isso nunca se chama sendSubmit
+// depois dele.
+async function tratarSubmit() {
+  log(`Evento 'submit'. Escolha: "${value}"`);
+
+  if (value === "") {
+    if (OBRIGATORIO) {
+      JFCustomWidget.showWidgetError("Escolha uma data e um horário.");
+      return;
+    }
+    JFCustomWidget.sendSubmit({ valid: true, value: "" });
+    return;
+  }
+
+  const partes = value.split("|");
+  const dataEscolhida = (partes[0] || "").trim();
+  const slotEscolhido = (partes[1] || "").trim();
+
+  let r;
+  try {
+    r = await reservarLugar(dataEscolhida, slotEscolhido);
+  } catch (e) {
+    // FALHA FECHADA. Ao contrário da revalidação que isto substituiu, aqui
+    // não se deixa passar: sem resposta do servidor não há lugar tomado, e
+    // deixar passar era vender um lugar que ninguém guardou.
+    log("Reserva falhou (" + e.message + "): a recusar.");
+    JFCustomWidget.showWidgetError(
+      "Não foi possível confirmar a reserva. Tente novamente.");
+    return;
+  }
+
+  if (r && r.ok === true && r.reservado === true) {
+    log(`Lugar reservado (${r.estado}).`);
+    JFCustomWidget.sendSubmit({ valid: true, value: value });
+    return;
+  }
+
+  if (r && r.ok === true && r.motivo === "cheio") {
+    log(`RECUSADO: ${slotEscolhido} ficou sem vagas entre a escolha e a submissão.`);
+    value = "";
+    desenharBotoes();
+    carregarSlots(dataEscolhida);
+    JFCustomWidget.showWidgetError(
+      "Esse horário acabou de ficar sem vagas. Escolha outro.");
+    return;
+  }
+
+  // Mensagem própria: o widget ofereceu esta data, e quem escolhesse hoje às
+  // 23:50 e submetesse às 00:01 recebia um "tente novamente" que nunca ia
+  // funcionar, sem perceber que só tinha de mudar o dia.
+  if (r && r.erro === "data_passada") {
+    log("RECUSADO: a data escolhida já passou.");
+    JFCustomWidget.showWidgetError("Essa data já passou. Escolha outra.");
+    return;
+  }
+
+  log("Reserva recusada pelo servidor: " + ((r && r.erro) || "sem motivo"));
+  JFCustomWidget.showWidgetError(
+    "Não foi possível confirmar a reserva. Tente novamente.");
 }
 
 // ===============================
@@ -316,60 +418,15 @@ if (!temJF) {
     ajustarAltura();
   });
 
-  // É esta subscrição que faz o valor chegar à submissão.
+  // É esta subscrição que toma o lugar e deixa a submissão passar.
   JFCustomWidget.subscribe("submit", function () {
-    log(`Evento 'submit'. A enviar: "${value}"`);
-
-    if (OBRIGATORIO && value === "") {
-      // showWidgetError já envia sendSubmit({valid:false}) por dentro,
-      // por isso não voltamos a chamar sendSubmit aqui.
-      JFCustomWidget.showWidgetError("Escolha uma data e um horário.");
-      return;
-    }
-
-    // Sem horário escolhido e não obrigatório: nada para revalidar.
-    if (value === "") {
-      JFCustomWidget.sendSubmit({ valid: true, value: value });
-      return;
-    }
-
-    const partes = value.split("|");
-    const dataEscolhida = (partes[0] || "").trim();
-    const slotEscolhido = (partes[1] || "").trim();
-
-    // Promise.race: ou a revalidação responde, ou desistimos e
-    // deixamos passar. Nunca deixamos a submissão pendurada.
-    const desistir = new Promise(resolve => {
-      setTimeout(() => resolve({ indeterminado: true }), TIMEOUT_REVALIDACAO_MS);
+    tratarSubmit().catch(function (e) {
+      // O catch também RESPONDE. Sem ele, uma exceção inesperada deixava o
+      // formulário à espera de uma resposta que nunca chegava.
+      log("ERRO inesperado na submissão: " + e.message);
+      JFCustomWidget.showWidgetError(
+        "Não foi possível confirmar a reserva. Tente novamente.");
     });
-
-    Promise.race([slotAindaTemVagas(dataEscolhida, slotEscolhido), desistir])
-      .then(r => {
-        if (r && r.cheio) {
-          log(`RECUSADO: ${slotEscolhido} ficou sem vagas entre a escolha e a submissão.`);
-          value = "";
-          carregarSlots(dataEscolhida);
-          // showWidgetError já envia sendSubmit({valid:false}).
-          JFCustomWidget.showWidgetError(
-            "Esse horário acabou de ficar sem vagas. Escolha outro."
-          );
-          return;
-        }
-
-        if (r && r.indeterminado) {
-          log("Revalidação sem resposta em tempo útil: a deixar passar.");
-        }
-
-        JFCustomWidget.sendSubmit({ valid: true, value: value });
-      })
-      .catch(e => {
-        // Nunca deixar a submissão pendurada. O formulário espera uma
-        // resposta nossa (a lib envia primeiro um {initial:true}); se
-        // aqui estourasse uma exceção, o hóspede ficava preso no botão
-        // de submeter para sempre.
-        log("ERRO na revalidação: " + e.message + " — a deixar passar.");
-        JFCustomWidget.sendSubmit({ valid: true, value: value });
-      });
   });
 }
 
@@ -378,6 +435,7 @@ if (!temJF) {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     RESERVAS_URL: RESERVAS_URL,
+    ORCAMENTO_RESERVA_MS: ORCAMENTO_RESERVA_MS,
     TOKEN: TOKEN,
     gerarToken: gerarToken,
     hojeLocal: hojeLocal,
@@ -386,7 +444,10 @@ if (typeof module !== "undefined" && module.exports) {
     carregarSlots: carregarSlots,
     selecionar: selecionar,
     desenharBotoes: desenharBotoes,
-    slotAindaTemVagas: slotAindaTemVagas,
+    comPrazo: comPrazo,
+    pedirReserva: pedirReserva,
+    reservarLugar: reservarLugar,
+    tratarSubmit: tratarSubmit,
     valorEscolhido: function () { return value; }
   };
 }
