@@ -36,8 +36,16 @@ var ESTADO_EXPIRADO = "expirado";
 
 var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
 
-// Chave nas ScriptProperties onde fica a marca do último webhook recebido.
-// É ela que arma a reconciliação (ver primeiroWebhookChegou_).
+// O valor que o widget grava, tal como aparece na submissão. Com grupos de
+// captura, porque é assim que o lemos de dentro do webhook.
+var FORMATO_RESERVA = /(\d{4}-\d{2}-\d{2})\s*\|\s*(\d{2}:\d{2}-\d{2}:\d{2})/;
+
+// Chaves nas ScriptProperties. O segredo do webhook e o ID do formulário
+// vivem AQUI e nunca no ficheiro: este código está num repositório público,
+// e quem descobrisse o segredo podia forjar confirmações e tornar uma
+// reserva falsa impossível de libertar.
+var CHAVE_SEGREDO = "segredoWebhook";
+var CHAVE_FORM_ID = "formIdEsperado";
 var CHAVE_ULTIMO_WEBHOOK = "ultimoWebhook";
 
 // Uma órfã é uma linha `activo` com mais de 20 minutos: se a submissão se
@@ -54,6 +62,12 @@ var JANELA_ORFAS_MS = 20 * 60 * 1000;
 var ESPERA_LOCK_MS = 3500;
 
 var ESPERA_LOCK_GET_MS = 5000;
+
+// O webhook não tem hóspede à espera, e uma confirmação perdida é caríssima:
+// a linha fica `activo`, parece órfã 20 minutos depois e o lugar é revendido.
+// Por isso espera mais do que o caminho do hóspede — mas não tanto que a
+// JotForm desista do pedido e a confirmação se perca de outra maneira.
+var ESPERA_LOCK_WEBHOOK_MS = 10000;
 
 // O preparar() e o limparTestes() correm à mão a partir do editor, onde não
 // há hóspede nenhum à espera nem orçamento de cliente a respeitar. Podem
@@ -211,6 +225,29 @@ function linhaDoToken_(linhas, token) {
   return null;
 }
 
+// A linha `activo` mais antiga daquele par data+horário: é ela que o webhook
+// confirma. Sem timestamp legível, a linha continua candidata (pela ordem da
+// folha) em vez de ser ignorada — ignorá-la faria o webhook não encontrar
+// nada e não confirmar reserva nenhuma.
+function maisAntigaActiva_(linhas, data, horario) {
+  var melhor = -1;
+  var melhorCriado = Infinity;
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var l = linhas[i] || [];
+    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+    if (normalizarData_(l[COL_DATA]) !== data) continue;
+    if (String(l[COL_HORARIO]).trim() !== horario) continue;
+
+    var criado = criadoMs_(l[COL_CRIADO]);
+    if (!isFinite(criado)) criado = Infinity;
+    if (melhor < 0 || criado < melhorCriado) {
+      melhor = i;
+      melhorCriado = criado;
+    }
+  }
+  return melhor;
+}
+
 // ===============================
 // VALIDAÇÃO (função pura)
 // ===============================
@@ -311,6 +348,137 @@ function reconciliar_(io, excluirIndice) {
 
   io.expirar(plano);
   return plano.length;
+}
+
+// ===============================
+// WEBHOOK DA JOTFORM (confirmação)
+// ===============================
+// A JotForm publica cada submissão concluída em POST <URL>?k=<segredo>, com
+// Content-Type form-encoded, e traz `formID` e `rawRequest`.
+
+// Achata um valor do rawRequest num texto. Um campo de nome do JotForm chega
+// como objeto ({first, last}), e é daí que sai "Ana Silva".
+function achatarValor_(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (typeof v !== "object") return "";
+
+  var partes = [];
+  for (var k in v) {
+    if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+    var s = achatarValor_(v[k]);
+    if (s) partes.push(s);
+  }
+  return partes.join(" ").trim();
+}
+
+// Procura um campo do rawRequest pelo NOME, de forma tolerante — a mesma
+// razão de sempre neste projeto: os nomes dos campos do JotForm mudam e um
+// nome que não casa falha em silêncio. Um valor que seja a própria reserva
+// nunca serve de quarto nem de nome.
+function campoPorNome_(campos, padrao) {
+  for (var k in campos) {
+    if (!Object.prototype.hasOwnProperty.call(campos, k)) continue;
+    if (!padrao.test(String(k))) continue;
+    var s = achatarValor_(campos[k]);
+    if (!s) continue;
+    if (FORMATO_RESERVA.test(s)) continue;
+    return s;
+  }
+  return "";
+}
+
+var NOME_CAMPO_QUARTO = /quarto|room/i;
+var NOME_CAMPO_NOME = /nome|name/i;
+
+// Lê do rawRequest a reserva e a identidade. Devolve null quando não há
+// reserva legível — e nesse caso não se confirma nada: um POST sem reserva
+// não diz que lugar confirmar.
+//
+// A reserva é procurada no TEXTO todo e não numa chave: o campo do widget
+// chama-se q137_typeA137 hoje e pode chamar-se outra coisa amanhã, e o
+// formato AAAA-MM-DD | HH:MM-HH:MM é inconfundível.
+function dadosDoWebhook_(bruto) {
+  var texto = String(bruto == null ? "" : bruto);
+  var m = texto.match(FORMATO_RESERVA);
+  if (!m) return null;
+
+  var out = { data: m[1], horario: m[2], quarto: "", nome: "" };
+
+  var campos = null;
+  try {
+    campos = JSON.parse(texto);
+  } catch (err) {
+    campos = null;
+  }
+  if (campos && typeof campos === "object") {
+    out.quarto = campoPorNome_(campos, NOME_CAMPO_QUARTO);
+    out.nome = campoPorNome_(campos, NOME_CAMPO_NOME);
+  }
+  return out;
+}
+
+// As três verificações, por esta ordem. Qualquer uma que falhe devolve
+// ok:false e NÃO confirma nada — nem marca que chegou webhook nenhum, senão
+// um POST anónimo qualquer armava a reconciliação.
+//
+// Se não houver linha `activo` para aquele par (o webhook chegou depois de a
+// reconciliação já ter libertado a linha, ou a submissão não passou pelo
+// widget), regista-se e não se cria nada: inventar uma reserva a partir de
+// um webhook seria dar a um POST o poder de ocupar lugares.
+function confirmarWebhook_(params, io) {
+  var p = params || {};
+
+  var segredo = io.segredo ? io.segredo() : null;
+  if (!segredo) {
+    console.log("Webhook recusado: não há segredo definido nas propriedades " +
+      "do script (" + CHAVE_SEGREDO + "). Sem segredo, qualquer pessoa que " +
+      "descobrisse o endereço podia forjar confirmações.");
+    return { ok: false, erro: "webhook_nao_configurado" };
+  }
+  if (String(p.k == null ? "" : p.k) !== String(segredo)) {
+    console.log("Webhook recusado: segredo (k) errado ou ausente.");
+    return { ok: false, erro: "segredo_invalido" };
+  }
+
+  var formEsperado = io.formIdEsperado ? io.formIdEsperado() : null;
+  if (!formEsperado) {
+    console.log("Webhook recusado: não há ID de formulário definido nas " +
+      "propriedades do script (" + CHAVE_FORM_ID + ").");
+    return { ok: false, erro: "webhook_nao_configurado" };
+  }
+  var formRecebido = String(p.formID == null ? "" : p.formID).trim();
+  if (formRecebido !== String(formEsperado).trim()) {
+    console.log("Webhook recusado: veio do formulário " + formRecebido +
+      " e o esperado é outro.");
+    return { ok: false, erro: "formulario_inesperado" };
+  }
+
+  var dados = dadosDoWebhook_(p.rawRequest);
+  if (!dados) {
+    console.log("Webhook recusado: não encontrei no rawRequest nenhuma " +
+      "reserva no formato AAAA-MM-DD | HH:MM-HH:MM.");
+    return { ok: false, erro: "reserva_ilegivel" };
+  }
+
+  // Só aqui, com as três verificações passadas: é este o registo de que o
+  // webhook FUNCIONA, e é ele que permite à reconciliação libertar órfãs
+  // (ver primeiroWebhookChegou_). Guarda-se mesmo quando não há linha para
+  // confirmar — o que se está a provar é que o canal está de pé, e uma
+  // linha em falta não desmente isso.
+  io.gravarUltimoWebhook(io.agora());
+
+  var indice = maisAntigaActiva_(io.lerReservas(), dados.data, dados.horario);
+  if (indice < 0) {
+    console.log("Webhook sem linha activa para " + dados.data + " | " +
+      dados.horario + ": nada confirmado e nada criado. Ou a reconciliação " +
+      "já libertou a linha, ou esta submissão não passou pelo widget.");
+    return { ok: true, confirmado: false, motivo: "sem_reserva_activa" };
+  }
+
+  io.confirmar(indice, dados.quarto, dados.nome);
+  return { ok: true, confirmado: true };
 }
 
 // ===============================
@@ -419,7 +587,25 @@ function ioReal_() {
       }
       SpreadsheetApp.flush();
     },
+    confirmar: function (indice, quarto, nome) {
+      var aba = folha_(ABA_RESERVAS, true);
+      var linha = indice + 1;
+      // O ESTADO primeiro, o quarto e o nome depois. É o estado que protege
+      // o lugar de ser libertado pela reconciliação: se a escrita falhar a
+      // meio, mais vale um lugar protegido sem nome do que um nome guardado
+      // numa linha que a reconciliação ainda vai revender.
+      aba.getRange(linha, COL_ESTADO + 1).setValue(ESTADO_CONFIRMADO);
+      aba.getRange(linha, COL_QUARTO + 1).setValue(quarto);
+      aba.getRange(linha, COL_NOME + 1).setValue(nome);
+      SpreadsheetApp.flush();
+    },
+    segredo: function () { return propriedade_(CHAVE_SEGREDO); },
+    formIdEsperado: function () { return propriedade_(CHAVE_FORM_ID); },
     ultimoWebhook: function () { return propriedade_(CHAVE_ULTIMO_WEBHOOK); },
+    gravarUltimoWebhook: function (ms) {
+      PropertiesService.getScriptProperties()
+        .setProperty(CHAVE_ULTIMO_WEBHOOK, criadoIso_(ms));
+    },
     agora: function () { return Date.now(); }
   };
 }
@@ -489,13 +675,49 @@ function doGet(e) {
 }
 
 // ===============================
-// POST: reservar um lugar
+// POST: reservar um lugar, ou confirmar pelo webhook
 // ===============================
+// Os dois tipos de pedido distinguem-se pelo CORPO: o do widget é JSON
+// (text/plain) com `acao`; o da JotForm é form-encoded e traz `formID` e
+// `rawRequest`, que o Apps Script desdobra em e.parameter.
 function doPost(e) {
+  var params = (e && e.parameter) || {};
+
+  if (params.formID !== undefined || params.rawRequest !== undefined) {
+    var lockWebhook = LockService.getScriptLock();
+    // A confirmação corre no MESMO mutex da reserva: lê a folha, escolhe uma
+    // linha e escreve-a. Sem o lock, escolhia uma linha que um doPost a
+    // decorrer já tinha expirado.
+    if (!lockWebhook.tryLock(ESPERA_LOCK_WEBHOOK_MS)) {
+      console.log("Webhook não conseguiu o lock: nada confirmado.");
+      return resposta_({ ok: false, erro: "lock_indisponivel" });
+    }
+    try {
+      return resposta_(confirmarWebhook_(params, ioReal_()));
+    } catch (err) {
+      console.log("Webhook falhou: " + err);
+      return resposta_({ ok: false, erro: "erro_interno" });
+    } finally {
+      lockWebhook.releaseLock();
+    }
+  }
+
+  // Um webhook que chegue de outra maneira (multipart, p.ex., que o Apps
+  // Script não desdobra em e.parameter) cai aqui e não confirma nada. E sem
+  // confirmações a reconciliação fica desarmada para sempre, sem nada onde
+  // olhar. Por isso deixamos rasto em vez de recusar em silêncio.
+  var conteudo = String((e && e.postData && e.postData.contents) || "");
+  if (conteudo.indexOf("rawRequest") >= 0 || conteudo.indexOf("formID") >= 0) {
+    console.log("Este POST parece um webhook da JotForm, mas não trouxe " +
+      "formID nem rawRequest em e.parameter (tipo: " +
+      ((e && e.postData && e.postData.type) || "desconhecido") +
+      "). Nada foi confirmado.");
+  }
+
   var pedido;
   try {
-    pedido = JSON.parse((e && e.postData && e.postData.contents) || "{}");
-  } catch (err) {
+    pedido = JSON.parse(conteudo || "{}");
+  } catch (err2) {
     return resposta_({ ok: false, erro: "corpo_invalido" });
   }
   // O !pedido não é zelo a mais: JSON.parse("null") tem SUCESSO, e o
@@ -514,7 +736,7 @@ function doPost(e) {
   }
   try {
     return resposta_(reservar_(pedido, ioReal_()));
-  } catch (err2) {
+  } catch (err3) {
     return resposta_({ ok: false, erro: "erro_interno" });
   } finally {
     lock.releaseLock();
@@ -604,10 +826,15 @@ function preparar_() {
     caps.appendRow(["10:15-11:00", 2]);
   }
 
-  // O dono tem de CONFIRMAR isto na instalação: enquanto não tiver chegado
-  // nenhum webhook, nenhum lugar é libertado.
-  var ultimo = ioReal_().ultimoWebhook();
-  return "Abas prontas. Último webhook recebido: " + (ultimo ? ultimo : "NUNCA") +
+  // O estado da configuração do webhook, para o dono CONFIRMAR na
+  // instalação. O segredo é reportado como "definido" e NUNCA impresso: este
+  // registo de execução é copiável e vai aparecer em capturas de ecrã.
+  var io = ioReal_();
+  var ultimo = io.ultimoWebhook();
+  return "Abas prontas. Segredo do webhook: " +
+    (io.segredo() ? "definido" : "EM FALTA") +
+    ". Formulário esperado: " + (io.formIdEsperado() ? io.formIdEsperado() : "EM FALTA") +
+    ". Último webhook recebido: " + (ultimo ? ultimo : "NUNCA") +
     (ultimo ? "" : " (enquanto for NUNCA, nenhum lugar é libertado)") + ".";
 }
 
@@ -656,10 +883,15 @@ if (typeof module !== "undefined") {
     ocupados_: ocupados_,
     algumSlotCheio_: algumSlotCheio_,
     linhaDoToken_: linhaDoToken_,
+    maisAntigaActiva_: maisAntigaActiva_,
     validarPedido_: validarPedido_,
     planoReconciliacao_: planoReconciliacao_,
     primeiroWebhookChegou_: primeiroWebhookChegou_,
     reconciliar_: reconciliar_,
+    achatarValor_: achatarValor_,
+    campoPorNome_: campoPorNome_,
+    dadosDoWebhook_: dadosDoWebhook_,
+    confirmarWebhook_: confirmarWebhook_,
     reservar_: reservar_,
     preparar: preparar,
     doGet: doGet,

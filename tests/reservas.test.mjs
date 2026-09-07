@@ -145,6 +145,30 @@ test("linhaDoToken_ encontra as linhas activas e as confirmadas", () => {
   });
 });
 
+test("maisAntigaActiva_ devolve a linha activa mais antiga do slot", () => {
+  const linhas = [
+    CAB,
+    ["t1", "2026-09-08", "08:45-09:30", "2026-09-08T11:30:00.000Z", "activo", "", ""],
+    ["t2", "2026-09-08", "08:45-09:30", "2026-09-08T10:00:00.000Z", "activo", "", ""],
+    ["t3", "2026-09-08", "08:45-09:30", "2026-09-08T09:00:00.000Z", "confirmado", "1", "X"],
+    ["t4", "2026-09-08", "08:00-08:45", "2026-09-08T08:00:00.000Z", "activo", "", ""]
+  ];
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30"), 2);
+  // Já confirmada não volta a ser confirmada, e o slot errado não conta.
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-09", "08:45-09:30"), -1);
+  assert.equal(gs.maisAntigaActiva_([CAB], "2026-09-08", "08:45-09:30"), -1);
+});
+
+test("maisAntigaActiva_ não ignora uma linha sem timestamp legível", () => {
+  // Ignorá-la fazia o webhook não encontrar nada e não confirmar nada: a
+  // reserva ficava `activo` e era revendida 20 minutos depois.
+  const linhas = [
+    CAB,
+    ["t1", "2026-09-08", "08:45-09:30", "", "activo", "", ""]
+  ];
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30"), 1);
+});
+
 test("validarPedido_ rejeita cada campo inválido com o seu código", () => {
   const bom = { token: "abcd-1234-efgh", data: "2026-09-08", horario: "08:00-08:45" };
   assert.deepEqual(gs.validarPedido_(bom, CAPS, "2026-09-07"), { ok: true });
@@ -230,9 +254,12 @@ function ioFalso(reservas, opcoes = {}) {
     reservas: reservas.map(l => l.slice()),
     acrescentadas: [],
     expiradas: [],
+    confirmadas: [],
     // Por omissão NUNCA chegou webhook nenhum: é o estado de uma instalação
     // nova, e é ele que trava a reconciliação.
-    ultimoWebhook: opcoes.ultimoWebhook === undefined ? null : opcoes.ultimoWebhook
+    ultimoWebhook: opcoes.ultimoWebhook === undefined ? null : opcoes.ultimoWebhook,
+    segredo: opcoes.segredo === undefined ? "s3gr3d0-do-webhook" : opcoes.segredo,
+    formId: opcoes.formId === undefined ? "253294429726062" : opcoes.formId
   };
   return {
     estado,
@@ -251,7 +278,16 @@ function ioFalso(reservas, opcoes = {}) {
         estado.expiradas.push(...indices);
         indices.forEach(i => { estado.reservas[i][4] = "expirado"; });
       },
+      confirmar: (indice, quarto, nome) => {
+        estado.confirmadas.push({ indice, quarto, nome });
+        estado.reservas[indice][4] = "confirmado";
+        estado.reservas[indice][5] = quarto;
+        estado.reservas[indice][6] = nome;
+      },
+      segredo: () => estado.segredo,
+      formIdEsperado: () => estado.formId,
       ultimoWebhook: () => estado.ultimoWebhook,
+      gravarUltimoWebhook: ms => { estado.ultimoWebhook = new Date(ms).toISOString(); },
       agora: () => opcoes.agora || AGORA
     }
   };
@@ -467,6 +503,202 @@ test("uma troca recusada não pode revogar o lugar que o hóspede já tinha", ()
 });
 
 // ===============================
+// O WEBHOOK DA JOTFORM
+// ===============================
+
+const FORM_ID = "253294429726062";
+const SEGREDO = "s3gr3d0-do-webhook";
+
+// Um rawRequest como a JotForm o envia: JSON com os campos por nome, o de
+// nome como objeto {first, last}, e a reserva no campo do widget.
+function raw(reserva = "2026-09-08 | 08:45-09:30", extra = {}) {
+  return JSON.stringify(Object.assign({
+    slug: "submit/" + FORM_ID,
+    q3_nome: { first: "Ana", last: "Silva" },
+    q5_quarto: "12",
+    q4_email: "ana@exemplo.pt",
+    q137_typeA137: reserva
+  }, extra));
+}
+
+function webhook(extra = {}) {
+  return Object.assign({ k: SEGREDO, formID: FORM_ID, rawRequest: raw() }, extra);
+}
+
+test("achatarValor_ junta um nome partido em first e last", () => {
+  assert.equal(gs.achatarValor_({ first: "Ana", last: "Silva" }), "Ana Silva");
+  assert.equal(gs.achatarValor_("  Rui  "), "Rui");
+  assert.equal(gs.achatarValor_(12), "12");
+  assert.equal(gs.achatarValor_(null), "");
+  assert.equal(gs.achatarValor_({ first: "", last: "" }), "");
+});
+
+test("campoPorNome_ é tolerante ao nome do campo e nunca devolve a reserva", () => {
+  const campos = {
+    q9_roomNumber: "14",
+    q2_fullName: { first: "Rui", last: "Dias" },
+    q137_typeA137: "2026-09-08 | 08:45-09:30"
+  };
+  assert.equal(gs.campoPorNome_(campos, /quarto|room/i), "14");
+  assert.equal(gs.campoPorNome_(campos, /nome|name/i), "Rui Dias");
+  // A reserva casa /nome|name/i pelo "Name"? Não: o valor é que é
+  // descartado, porque um valor no formato da reserva não é o nome de
+  // ninguém.
+  assert.equal(gs.campoPorNome_({ q1_reservaName: "2026-09-08 | 08:45-09:30" }, /name/i), "");
+  assert.equal(gs.campoPorNome_({}, /nome/i), "");
+});
+
+test("dadosDoWebhook_ lê a reserva, o quarto e o nome", () => {
+  assert.deepEqual(gs.dadosDoWebhook_(raw()), {
+    data: "2026-09-08", horario: "08:45-09:30", quarto: "12", nome: "Ana Silva"
+  });
+});
+
+test("dadosDoWebhook_ tolera espaçamento e um corpo que não é JSON", () => {
+  assert.deepEqual(gs.dadosDoWebhook_("Reserva:2026-09-08|08:45-09:30"), {
+    data: "2026-09-08", horario: "08:45-09:30", quarto: "", nome: ""
+  });
+});
+
+test("dadosDoWebhook_ devolve null sem reserva legível", () => {
+  assert.equal(gs.dadosDoWebhook_(JSON.stringify({ q3_nome: "Ana" })), null);
+  assert.equal(gs.dadosDoWebhook_(""), null);
+  assert.equal(gs.dadosDoWebhook_(null), null);
+  // Uma data sozinha não é uma reserva: sem horário não se sabe que lugar
+  // confirmar.
+  assert.equal(gs.dadosDoWebhook_("2026-09-08"), null);
+});
+
+const DUAS_ACTIVAS = [
+  CAB,
+  ["novo1", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""],
+  ["velho1", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 5 * 60 * 1000), "activo", "", ""]
+];
+
+test("um webhook válido confirma a activa mais antiga e escreve quarto e nome", () => {
+  const { io, estado } = ioFalso(DUAS_ACTIVAS);
+  const r = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), io), { ok: true, confirmado: true });
+  });
+  assert.equal(r, "", "um webhook normal não precisa de escrever no registo");
+
+  assert.deepEqual(estado.confirmadas, [{ indice: 2, quarto: "12", nome: "Ana Silva" }]);
+  assert.equal(estado.reservas[2][4], "confirmado");
+  assert.equal(estado.reservas[2][5], "12");
+  assert.equal(estado.reservas[2][6], "Ana Silva");
+  assert.equal(estado.reservas[1][4], "activo", "a outra linha fica como estava");
+  // E fica a prova de que o webhook funciona: é ela que arma a reconciliação.
+  assert.equal(estado.ultimoWebhook, new Date(AGORA).toISOString());
+});
+
+test("um webhook com o segredo errado não confirma nada", () => {
+  const { io, estado } = ioFalso(DUAS_ACTIVAS);
+  const registo = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook({ k: "outro" }), io), {
+      ok: false, erro: "segredo_invalido"
+    });
+    assert.deepEqual(gs.confirmarWebhook_(webhook({ k: undefined }), io), {
+      ok: false, erro: "segredo_invalido"
+    });
+  });
+  assert.deepEqual(estado.confirmadas, []);
+  // E sobretudo: não arma a reconciliação. Senão qualquer POST anónimo
+  // punha o script a libertar reservas.
+  assert.equal(estado.ultimoWebhook, null);
+  assert.match(registo, /segredo/);
+});
+
+test("um webhook de outro formulário não confirma nada", () => {
+  const { io, estado } = ioFalso(DUAS_ACTIVAS);
+  const registo = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook({ formID: "999" }), io), {
+      ok: false, erro: "formulario_inesperado"
+    });
+  });
+  assert.deepEqual(estado.confirmadas, []);
+  assert.equal(estado.ultimoWebhook, null);
+  assert.match(registo, /999/);
+});
+
+test("um webhook sem reserva legível não confirma nada", () => {
+  const { io, estado } = ioFalso(DUAS_ACTIVAS);
+  const registo = comRegisto(() => {
+    assert.deepEqual(
+      gs.confirmarWebhook_(webhook({ rawRequest: JSON.stringify({ q3_nome: "Ana" }) }), io),
+      { ok: false, erro: "reserva_ilegivel" }
+    );
+    assert.deepEqual(gs.confirmarWebhook_(webhook({ rawRequest: undefined }), io), {
+      ok: false, erro: "reserva_ilegivel"
+    });
+  });
+  assert.deepEqual(estado.confirmadas, []);
+  assert.equal(estado.ultimoWebhook, null, "um corpo ilegível não prova nada");
+  assert.match(registo, /AAAA-MM-DD/);
+});
+
+test("sem segredo ou sem formulário nas propriedades, recusa em vez de aceitar", () => {
+  const semSegredo = ioFalso(DUAS_ACTIVAS, { segredo: null });
+  const semForm = ioFalso(DUAS_ACTIVAS, { formId: "" });
+  const registo = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), semSegredo.io), {
+      ok: false, erro: "webhook_nao_configurado"
+    });
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), semForm.io), {
+      ok: false, erro: "webhook_nao_configurado"
+    });
+  });
+  assert.deepEqual(semSegredo.estado.confirmadas, []);
+  assert.deepEqual(semForm.estado.confirmadas, []);
+  assert.equal(semSegredo.estado.ultimoWebhook, null);
+  assert.match(registo, /segredoWebhook/);
+  assert.match(registo, /formIdEsperado/);
+});
+
+test("um webhook sem linha activa correspondente não cria reserva nenhuma", () => {
+  // Inventar uma reserva a partir de um webhook seria dar a um POST o poder
+  // de ocupar lugares. A reconciliação pode já ter libertado a linha, ou a
+  // submissão pode não ter passado pelo widget.
+  const { io, estado } = ioFalso([
+    CAB,
+    ["outro", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA), "activo", "", ""],
+    ["feita", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA), "confirmado", "9", "Zé"]
+  ]);
+  const registo = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), io), {
+      ok: true, confirmado: false, motivo: "sem_reserva_activa"
+    });
+  });
+  assert.deepEqual(estado.confirmadas, []);
+  assert.equal(estado.acrescentadas.length, 0, "nada é criado");
+  assert.equal(estado.reservas.length, 3);
+  assert.match(registo, /sem linha activa/);
+  // O canal está de pé — é isso que se prova aqui — mesmo sem linha para
+  // confirmar.
+  assert.equal(estado.ultimoWebhook, new Date(AGORA).toISOString());
+});
+
+test("um webhook válido arma a reconciliação, e só ele", () => {
+  const reservas = [
+    CAB,
+    ["orfa", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""],
+    ["nova", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
+  ];
+  const { io, estado } = ioFalso(reservas);
+
+  // Antes de qualquer webhook: a órfã fica presa (é o lado seguro).
+  comRegisto(() => assert.equal(gs.reconciliar_(io, -1), 0));
+  assert.deepEqual(estado.expiradas, []);
+
+  // Chega o webhook da reserva nova. Confirma-a e deixa a marca.
+  assert.deepEqual(gs.confirmarWebhook_(webhook(), io), { ok: true, confirmado: true });
+  assert.equal(estado.reservas[2][4], "confirmado");
+
+  // E agora a órfã já pode ser libertada.
+  assert.equal(gs.reconciliar_(io, -1), 1);
+  assert.deepEqual(estado.expiradas, [1]);
+});
+
+// ===============================
 // LIVRO FALSO (folha de cálculo em memória)
 // ===============================
 // Um SpreadsheetApp/LockService/ContentService/PropertiesService inteiro em
@@ -588,8 +820,13 @@ function comRegisto(fn) {
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-// Propriedades de uma instalação onde o webhook já chegou pelo menos uma vez.
-const CONFIGURADO = { ultimoWebhook: WEBHOOK_JA_CHEGOU };
+// Propriedades de uma instalação já a funcionar: webhook configurado e já
+// recebido pelo menos uma vez.
+const CONFIGURADO = {
+  segredoWebhook: SEGREDO,
+  formIdEsperado: FORM_ID,
+  ultimoWebhook: WEBHOOK_JA_CHEGOU
+};
 
 // ===============================
 // INDEPENDÊNCIA DOS DOIS FUSOS
@@ -688,17 +925,26 @@ test("preparar() acrescenta quarto e nome ao cabeçalho de uma folha antiga", ()
   );
 });
 
-test("preparar() diz se já chegou algum webhook", () => {
-  // É o que o dono tem de confirmar na instalação: enquanto for NUNCA,
-  // nenhum lugar é libertado.
-  const comMarca = livroFalso({}, { propriedades: CONFIGURADO });
-  assert.match(
-    carregarCom(comMarca.stubs).preparar(),
-    /Último webhook recebido: 2026-09-08T09/
-  );
+test("preparar() diz se o webhook está configurado, sem imprimir o segredo", () => {
+  const livro = livroFalso({}, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
 
-  const semMarca = livroFalso({});
-  const msg = carregarCom(semMarca.stubs).preparar();
+  const msg = gsComStub.preparar();
+
+  assert.match(msg, /Segredo do webhook: definido/);
+  assert.doesNotMatch(msg, new RegExp(SEGREDO), "o registo é copiável e vai para capturas de ecrã");
+  assert.match(msg, new RegExp("Formulário esperado: " + FORM_ID));
+  assert.match(msg, /Último webhook recebido: 2026-09-08T09/);
+});
+
+test("preparar() avisa quando falta a configuração do webhook", () => {
+  const livro = livroFalso({});
+  const gsComStub = carregarCom(livro.stubs);
+
+  const msg = gsComStub.preparar();
+
+  assert.match(msg, /Segredo do webhook: EM FALTA/);
+  assert.match(msg, /Formulário esperado: EM FALTA/);
   assert.match(msg, /Último webhook recebido: NUNCA/);
   assert.match(msg, /nenhum lugar é libertado/);
 });
@@ -773,7 +1019,7 @@ test("doGet não liberta nada enquanto não tiver chegado nenhum webhook", () =>
       ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""]
     ],
     Capacidades: CAPS_FOLHA
-  }, { propriedades: {} });
+  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
   const gsComStub = carregarCom(livro.stubs);
 
   let r;
@@ -944,6 +1190,28 @@ test("doPost trata um corpo ilegível e um corpo ausente", () => {
   assert.deepEqual(corpo(gsComStub.doPost()), { ok: false, erro: "acao_desconhecida" });
 });
 
+test("doPost deixa rasto quando um webhook chega por outro caminho", () => {
+  // A JotForm manda form-encoded, que o Apps Script desdobra em e.parameter.
+  // Se um dia mandar multipart (basta um campo de ficheiro no formulário), o
+  // e.parameter vem vazio, nada é confirmado e a reconciliação fica
+  // desarmada para sempre — sem nada onde olhar.
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => {
+    r = corpo(gsComStub.doPost({
+      postData: { type: "multipart/form-data", contents: 'name="rawRequest"' }
+    }));
+  });
+
+  // O corpo nem sequer é JSON, logo a resposta é a do corpo ilegível — o que
+  // interessa é que fica escrito que aquilo parecia um webhook.
+  assert.deepEqual(r, { ok: false, erro: "corpo_invalido" });
+  assert.match(registo, /parece um webhook/);
+  assert.match(registo, /multipart/);
+});
+
 test("doPost propaga a recusa de um slot cheio", () => {
   const livro = livroFalso({
     Reservas: [
@@ -959,6 +1227,98 @@ test("doPost propaga a recusa de um slot cheio", () => {
     ok: true, reservado: false, motivo: "cheio", restantes: 0
   });
   assert.equal(livro.chamadas.releaseLock, 1);
+});
+
+// ===============================
+// O WEBHOOK PELA CASCA HTTP
+// ===============================
+
+test("doPost encaminha um webhook da JotForm e confirma a linha, dentro do lock", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["velho1", "2026-09-08", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doPost({
+    parameter: webhook(),
+    postData: { type: "application/x-www-form-urlencoded", contents: "formID=" + FORM_ID }
+  }));
+
+  assert.deepEqual(r, { ok: true, confirmado: true });
+  const linha = livro.folhas["Reservas"].dados[1];
+  assert.equal(linha[4], "confirmado");
+  assert.equal(linha[5], "12");
+  assert.equal(linha[6], "Ana Silva");
+  // O mesmo mutex da reserva, com a espera do webhook, e sempre largado.
+  assert.deepEqual(livro.chamadas.tryLock, [10000]);
+  assert.equal(livro.chamadas.releaseLock, 1);
+  // E a marca fica nas propriedades do script: é ela que arma a reconciliação.
+  assert.match(livro.propriedades.ultimoWebhook, ISO_UTC);
+});
+
+test("doPost recusa um webhook com o segredo errado sem tocar na folha", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["velho1", "2026-09-08", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  comRegisto(() => {
+    r = corpo(gsComStub.doPost({ parameter: webhook({ k: "errado" }) }));
+  });
+
+  assert.deepEqual(r, { ok: false, erro: "segredo_invalido" });
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+  assert.equal(livro.propriedades.ultimoWebhook, undefined, "não arma a reconciliação");
+  assert.equal(livro.chamadas.releaseLock, 1, "o lock tem de sair sempre");
+});
+
+test("doPost devolve lock_indisponivel ao webhook em vez de confirmar às cegas", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["velho1", "2026-09-08", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA
+  }, {
+    lockIndisponivel: true,
+    propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID }
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => { r = corpo(gsComStub.doPost({ parameter: webhook() })); });
+
+  assert.deepEqual(r, { ok: false, erro: "lock_indisponivel" });
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+  assert.equal(livro.chamadas.releaseLock, 0);
+  assert.match(registo, /não conseguiu o lock/);
+});
+
+test("doPost larga o lock quando a confirmação estoura", () => {
+  const livro = livroFalso({
+    Reservas: [CAB, ["v", "2026-09-08", "08:45-09:30", "x", "activo", "", ""]],
+    Capacidades: CAPS_FOLHA
+  }, {
+    abaExplosiva: "Reservas",
+    propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID }
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => { r = corpo(gsComStub.doPost({ parameter: webhook() })); });
+
+  assert.deepEqual(r, { ok: false, erro: "erro_interno" });
+  assert.equal(livro.chamadas.releaseLock, 1);
+  assert.match(registo, /Webhook falhou/);
 });
 
 // ===============================
@@ -1084,8 +1444,37 @@ test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha"
   assert.deepEqual(chamadasGetRange, [[2, 5]]);
 });
 
-test("ioReal_ lê a marca do último webhook das propriedades do script", () => {
-  const guardadas = { ultimoWebhook: WEBHOOK_JA_CHEGOU };
+test("ioReal_.confirmar escreve o estado primeiro, e depois quarto e nome", () => {
+  // A ordem é deliberada: é o estado que protege o lugar da reconciliação.
+  // Se a escrita falhar a meio, mais vale um lugar protegido sem nome do que
+  // um nome guardado numa linha que ainda vai ser revendida.
+  const escritas = [];
+  const folhaFalsa = {
+    getRange: (linha, coluna) => ({
+      setValue: v => { escritas.push([linha, coluna, v]); }
+    })
+  };
+  const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
+  let flushes = 0;
+  const gsComStub = carregarGs(CAMINHO_GS, {
+    SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => { flushes++; } }
+  });
+
+  gsComStub.ioReal_().confirmar(1, "12", "Ana Silva");
+
+  assert.deepEqual(escritas, [
+    [2, 5, "confirmado"],
+    [2, 6, "12"],
+    [2, 7, "Ana Silva"]
+  ]);
+  assert.equal(flushes, 1);
+});
+
+test("ioReal_ lê o segredo e o formulário das propriedades do script", () => {
+  // Nunca do ficheiro: este código vive num repositório público, e quem
+  // soubesse o segredo podia forjar confirmações e tornar uma reserva falsa
+  // impossível de libertar.
+  const guardadas = { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID };
   const gsComStub = carregarGs(CAMINHO_GS, {
     PropertiesService: {
       getScriptProperties: () => ({
@@ -1094,6 +1483,13 @@ test("ioReal_ lê a marca do último webhook das propriedades do script", () => 
       })
     }
   });
+  const io = gsComStub.ioReal_();
 
-  assert.equal(gsComStub.ioReal_().ultimoWebhook(), WEBHOOK_JA_CHEGOU);
+  assert.equal(io.segredo(), SEGREDO);
+  assert.equal(io.formIdEsperado(), FORM_ID);
+  assert.equal(io.ultimoWebhook(), null);
+
+  io.gravarUltimoWebhook(AGORA);
+  assert.equal(guardadas.ultimoWebhook, new Date(AGORA).toISOString());
+  assert.equal(io.ultimoWebhook(), new Date(AGORA).toISOString());
 });
