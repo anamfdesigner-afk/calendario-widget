@@ -5,37 +5,44 @@
 // impossível sobre-reservar: o POST reserva um lugar dentro de um mutex
 // (LockService), coisa que o Sheety nunca conseguiu oferecer.
 //
+// Um lugar tem três estados: `activo` (tomado na submissão, ainda por
+// confirmar), `confirmado` (o webhook da JotForm disse que a submissão se
+// concluiu) e `expirado` (libertado, por abandono ou à mão). A ocupação em
+// vivo são as linhas `activo` MAIS as `confirmado`.
+//
 // Instalação: ver docs/instalacao-reservas.md.
 
 var ABA_RESERVAS = "Reservas";
 var ABA_CAPACIDADES = "Capacidades";
-// Nome habitual da aba das submissões. É só o PRIMEIRO palpite: a busca
-// real é tolerante (ver escolherAbaSubmissoes_).
-var ABA_SUBMISSOES = "Form responses";
 
-// Nomes que uma aba de submissões costuma ter em qualquer idioma:
-// "Form responses", "Form Responses 1", "Respostas do formulário".
-var NOME_SUBMISSOES = /form|respost/i;
-
-// Colunas da aba Reservas.
+// Colunas da aba Reservas. A ordem é estável: o `quarto` e o `nome` foram
+// ACRESCENTADOS ao fim, porque mudar a posição de uma coluna existente
+// tornaria ilegíveis todas as linhas já guardadas — e uma linha ilegível é
+// um lugar vendido que deixa de contar para a ocupação.
 var COL_TOKEN = 0;
 var COL_DATA = 1;
 var COL_HORARIO = 2;
 var COL_CRIADO = 3;
 var COL_ESTADO = 4;
+var COL_QUARTO = 5;
+var COL_NOME = 6;
 
-var CABECALHO_RESERVAS = ["token", "data", "horario", "criado", "estado"];
+var CABECALHO_RESERVAS = ["token", "data", "horario", "criado", "estado", "quarto", "nome"];
 var CABECALHO_CAPACIDADES = ["horario", "vagas"];
 
 var ESTADO_ACTIVO = "activo";
+var ESTADO_CONFIRMADO = "confirmado";
 var ESTADO_EXPIRADO = "expirado";
 
 var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
 
-// Chave nas ScriptProperties onde vive a marca de água das submissões
-// (ver submissoesFiaveis_).
-var CHAVE_MARCA = "marcaSubmissoes";
+// Chave nas ScriptProperties onde fica a marca do último webhook recebido.
+// É ela que arma a reconciliação (ver primeiroWebhookChegou_).
+var CHAVE_ULTIMO_WEBHOOK = "ultimoWebhook";
 
+// Uma órfã é uma linha `activo` com mais de 20 minutos: se a submissão se
+// tivesse concluído, o webhook já teria chegado e a linha estaria
+// `confirmado`.
 var JANELA_ORFAS_MS = 20 * 60 * 1000;
 
 // ATENÇÃO: acoplado ao ORCAMENTO_RESERVA_MS do widget.js (5 s por
@@ -48,10 +55,10 @@ var ESPERA_LOCK_MS = 3500;
 
 var ESPERA_LOCK_GET_MS = 5000;
 
-// O preparar(), o semear() e o limparTestes() correm à mão a partir do
-// editor, onde não há hóspede nenhum à espera nem orçamento de cliente a
-// respeitar. Podem esperar muito mais do que o caminho da reserva — e mais
-// vale esperar do que devolver ao dono uma mensagem de "ocupado".
+// O preparar() e o limparTestes() correm à mão a partir do editor, onde não
+// há hóspede nenhum à espera nem orçamento de cliente a respeitar. Podem
+// esperar muito mais do que o caminho da reserva — e mais vale esperar do
+// que devolver ao dono uma mensagem de "ocupado".
 var ESPERA_LOCK_MANUTENCAO_MS = 20000;
 
 var AVISO_OCUPADO = "A folha está ocupada neste momento. Tente outra vez dentro de um minuto.";
@@ -114,18 +121,13 @@ function normalizarData_(v) {
   return m ? m[1] + "-" + m[2] + "-" + m[3] : t;
 }
 
-// Aceita "a|b" e "a | b" como o mesmo valor.
-function normalizarReserva_(v) {
-  return String(v == null ? "" : v).trim().replace(/\s*\|\s*/, " | ");
-}
-
 // O Apps Script tem DOIS fusos independentes: o do projeto (o que o guia
 // manda pôr em Europe/Lisbon) e o da própria folha de cálculo, que o guia
 // nunca mencionava. O getValues() constrói as células de data em Date com o
 // fuso DA FOLHA; o getMonth()/getDate() do normalizarData_ lê-as no fuso DO
 // PROJETO. Quando os dois discordam, uma linha guardada à meia-noite lê-se
-// como o dia anterior, e o activos_, o linhaDoToken_ e a chave da
-// reconciliação deslizam todos com ela: lugares revendidos no dia real e
+// como o dia anterior, e o ocupados_, o linhaDoToken_ e a escolha da linha a
+// confirmar deslizam todos com ela: lugares revendidos no dia real e
 // bloqueados no dia anterior. O mesmo deslize pode fazer uma reserva
 // recém-criada parecer mais velha, colapsar a janela dos 20 minutos e
 // torná-la elegível a órfã antes de a submissão sequer existir.
@@ -139,6 +141,13 @@ function criadoIso_(ms) {
   return new Date(ms).toISOString();
 }
 
+// Em vivo o `criado` é sempre a string ISO-8601 UTC escrita pelo criadoIso_,
+// e o Date.parse lê-a sem depender de fuso nenhum. O ramo do Date fica para
+// uma folha antiga ou reformatada à mão.
+function criadoMs_(v) {
+  return v instanceof Date ? v.getTime() : Date.parse(String(v));
+}
+
 function formatarTexto_(aba, coluna) {
   aba.getRange(1, coluna + 1, aba.getMaxRows(), 1).setNumberFormat("@");
 }
@@ -146,13 +155,20 @@ function formatarTexto_(aba, coluna) {
 // ===============================
 // OCUPAÇÃO (funções puras)
 // ===============================
-// Esta é a ÚNICA definição de ocupação usada em vivo. A aba Form responses
-// nunca entra na contagem — serve só à reconciliação.
-function activos_(linhas, data, horario) {
+// Esta é a ÚNICA definição de ocupação usada em vivo, e conta os DOIS
+// estados que tomam lugar: `activo` (submetido, à espera do webhook) e
+// `confirmado` (webhook recebido). Contar só as activas devolveria ao mercado
+// todos os lugares já confirmados — exatamente os que são certos.
+function ocupaLugar_(estado) {
+  var e = String(estado == null ? "" : estado).trim();
+  return e === ESTADO_ACTIVO || e === ESTADO_CONFIRMADO;
+}
+
+function ocupados_(linhas, data, horario) {
   var n = 0;
   for (var i = 1; i < (linhas || []).length; i++) {
     var l = linhas[i] || [];
-    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+    if (!ocupaLugar_(l[COL_ESTADO])) continue;
     if (normalizarData_(l[COL_DATA]) !== data) continue;
     if (String(l[COL_HORARIO]).trim() !== horario) continue;
     n++;
@@ -162,22 +178,29 @@ function activos_(linhas, data, horario) {
 
 // Algum slot desta data parece cheio? É o gatilho da reconciliação no GET
 // (ver doGet). Slots de capacidade 0 (horário fechado pelo dono) ficam de
-// fora: 0 activos já é "cheio" por >=, e sem esta guarda um único horário
+// fora: 0 ocupados já é "cheio" por >=, e sem esta guarda um único horário
 // fechado punha a reconciliação a correr em TODOS os GET, que é
 // exatamente o custo que se quer evitar. Um horário sem lugares também não
 // tem lugares para libertar.
 function algumSlotCheio_(linhas, data, caps) {
   for (var i = 0; i < (caps || []).length; i++) {
     if (caps[i].vagas <= 0) continue;
-    if (activos_(linhas, data, caps[i].horario) >= caps[i].vagas) return true;
+    if (ocupados_(linhas, data, caps[i].horario) >= caps[i].vagas) return true;
   }
   return false;
 }
 
+// A linha viva deste token, em qualquer dos estados que tomam lugar.
+//
+// Incluir o `confirmado` não é zelo a mais. Um hóspede que submeta, receba a
+// confirmação e volte atrás no formulário para submeter outra vez traz o
+// MESMO token: se só olhássemos para as activas, o reservar_ não via a linha
+// já confirmada, criava uma segunda e o hóspede ficava com dois lugares —
+// e o primeiro, por estar `confirmado`, nunca seria libertado.
 function linhaDoToken_(linhas, token) {
   for (var i = 1; i < (linhas || []).length; i++) {
     var l = linhas[i] || [];
-    if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
+    if (!ocupaLugar_(l[COL_ESTADO])) continue;
     if (String(l[COL_TOKEN]).trim() !== token) continue;
     return {
       indice: i,
@@ -205,182 +228,52 @@ function validarPedido_(pedido, caps, hoje) {
 }
 
 // ===============================
-// RECONCILIAÇÃO (funções puras)
+// RECONCILIAÇÃO (auto-reparação)
 // ===============================
-// Uma reserva genuína deixa rasto em DOIS sítios: uma linha na aba
-// Reservas (escrita por nós) e uma linha na Form responses (escrita pela
-// integração do JotForm). Uma reserva abandonada deixa rasto só no
-// primeiro. Logo, o excedente de linhas antigas sem contrapartida nas
-// submissões são órfãs, e podem ser libertadas.
+// Uma reserva que se concretizou é CONFIRMADA pelo webhook da JotForm. Uma
+// abandonada fica `activo` para sempre. Logo, uma linha `activo` com mais de
+// 20 minutos é uma órfã e pode ser libertada: se a submissão se tivesse
+// concluído, o webhook já teria chegado.
 //
-// Casamos por CONTAGENS, não por identidade: por isso não é preciso
-// campo novo no JotForm nem espelhar o token. A troco disso, não sabemos
-// QUAL das linhas é a órfã — e não precisamos, só de quantas.
-
-var FORMATO_RESERVA_COMPLETO = /^\d{4}-\d{2}-\d{2}\s*\|\s*\d{2}:\d{2}-\d{2}:\d{2}$/;
-
-// Procura a coluna "Reserva" na Form responses: primeiro pelo cabeçalho,
-// depois por conteúdo. Devolver -1 é o sinal de "não sei ler isto", e quem
-// chama TEM de tratar isso como "não reconciliar nada".
+// Isto substituiu uma versão que INFERIA o mesmo comparando contagens com
+// uma coluna da folha das respostas. Essa coluna nunca existiu — o espelho
+// do JotForm nunca escreveu nela (verificado no formulário publicado) — e a
+// inferência trazia consigo toda a espécie de modo de falha silencioso.
+// Agora não se infere: ou o webhook confirmou, ou não.
 //
-// O candidato do cabeçalho só é aceite se tiver pelo menos um valor no
-// formato certo. Sem esta validação, uma coluna "Reserva" que existe mas
-// está vazia — p.ex. a integração do JotForm ainda não está mapeada para
-// lá escrever, ou a aba só tem cabeçalho — seria aceite às cegas: toda a
-// contagem de submissões ficaria a zero, toda a reserva antiga pareceria
-// órfã, e a reconciliação libertaria reservas REAIS. Por isso caímos para
-// a rede de segurança por conteúdo, e devolvemos -1 se nem essa encontrar
-// nada — nunca aceitamos uma coluna sem provas de conter reservas.
-function colunaReserva_(linhas) {
-  if (!linhas || !linhas.length) return -1;
-
-  var cabecalho = linhas[0] || [];
-  var largura = 0;
-  for (var i = 0; i < linhas.length; i++) {
-    largura = Math.max(largura, (linhas[i] || []).length);
-  }
-
-  // Contagem por coluna de valores no formato certo — usada tanto para
-  // validar o candidato do cabeçalho como para a rede de segurança.
-  var contagens = [];
-  for (var col = 0; col < largura; col++) {
-    var n = 0;
-    for (var r = 1; r < linhas.length; r++) {
-      var v = normalizarReserva_((linhas[r] || [])[col]);
-      if (FORMATO_RESERVA_COMPLETO.test(v)) n++;
-    }
-    contagens[col] = n;
-  }
-
-  var candidatoCabecalho = -1;
-  for (var c = 0; c < cabecalho.length; c++) {
-    if (/reserva/i.test(String(cabecalho[c] == null ? "" : cabecalho[c]))) {
-      candidatoCabecalho = c;
-      break;
-    }
-  }
-  if (candidatoCabecalho >= 0 && contagens[candidatoCabecalho] > 0) {
-    return candidatoCabecalho;
-  }
-
-  // Rede de segurança: a coluna com mais valores no formato certo.
-  var melhor = -1;
-  var melhorContagem = 0;
-  for (var col2 = 0; col2 < largura; col2++) {
-    if (contagens[col2] > melhorContagem) {
-      melhorContagem = contagens[col2];
-      melhor = col2;
-    }
-  }
-  return melhorContagem > 0 ? melhor : -1;
-}
-
-// Quantos valores no formato de reserva tem a melhor coluna desta aba. É a
-// medida de "esta aba parece a das respostas a valer", usada para desempatar
-// entre abas com nomes igualmente plausíveis (ver escolherAbaSubmissoes_).
-function forcaReservas_(linhas) {
-  var idx = colunaReserva_(linhas);
-  if (idx < 0) return 0;
-  var n = 0;
-  for (var i = 1; i < (linhas || []).length; i++) {
-    if (FORMATO_RESERVA_COMPLETO.test(normalizarReserva_((linhas[i] || [])[idx]))) n++;
-  }
-  return n;
-}
-
-function contarSubmissoes_(linhas, idxColuna) {
-  var mapa = {};
-  if (idxColuna < 0) return mapa;
-  for (var i = 1; i < (linhas || []).length; i++) {
-    var v = normalizarReserva_((linhas[i] || [])[idxColuna]);
-    if (!v) continue;
-    mapa[v] = (mapa[v] || 0) + 1;
-  }
-  return mapa;
-}
-
-function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
-  var porSlot = {};
-
+// Uma linha `confirmado` NUNCA é libertada. É uma reserva a valer.
+function planoReconciliacao_(reservas, agoraMs, janelaMs) {
+  var expirar = [];
   for (var i = 1; i < (reservas || []).length; i++) {
     var l = reservas[i] || [];
     if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
 
-    // Em vivo o `criado` é sempre a string ISO-8601 UTC escrita pelo
-    // criadoIso_, e o Date.parse lê-a sem depender de fuso nenhum. O ramo
-    // do Date fica para uma folha antiga ou reformatada à mão.
-    var criado = l[COL_CRIADO] instanceof Date
-      ? l[COL_CRIADO].getTime()
-      : Date.parse(String(l[COL_CRIADO]));
+    var criado = criadoMs_(l[COL_CRIADO]);
     // Sem timestamp legível não arriscamos: deixamos a linha em paz.
     if (!isFinite(criado)) continue;
     if (agoraMs - criado <= janelaMs) continue;
 
-    var chave = normalizarData_(l[COL_DATA]) + " | " + String(l[COL_HORARIO]).trim();
-    if (!porSlot[chave]) porSlot[chave] = [];
-    porSlot[chave].push({ indice: i, criado: criado });
+    expirar.push(i);
   }
-
-  var expirar = [];
-  for (var chave2 in porSlot) {
-    if (!Object.prototype.hasOwnProperty.call(porSlot, chave2)) continue;
-    var antigas = porSlot[chave2];
-    antigas.sort(function (a, b) { return a.criado - b.criado; });
-
-    var confirmadas = submissoes[chave2] || 0;
-    var excedente = antigas.length - confirmadas;
-    for (var k = 0; k < excedente && k < antigas.length; k++) {
-      expirar.push(antigas[k].indice);
-    }
-  }
-
-  expirar.sort(function (a, b) { return a - b; });
   return expirar;
 }
 
-// A guarda do colunaReserva_ é ao nível da COLUNA: basta UMA linha com
-// valor no formato certo. A premissa de que a reconciliação precisa é por
-// LINHA: toda a reserva genuína deixou uma submissão com o seu valor.
+// Já chegou algum webhook, alguma vez?
 //
-// O gatilho realista é a história deste repositório: alguém renomeia ou
-// remapeia o campo `Reserva` no JotForm. O setFieldsValueByLabel é um
-// postMessage sem resposta, onde um rótulo errado é indistinguível de
-// sucesso — foi exatamente esse o erro que passou muito tempo sem se notar
-// aqui. O espelho deixa de escrever, as linhas históricas válidas mantêm o
-// colunaReserva_ satisfeito, cada reserva nova parece órfã, e 20 minutos
-// depois de cada reserva o lugar é libertado e revendido, em silêncio.
+// Esta é a guarda mais importante do ficheiro. Se o webhook estiver mal
+// configurado — segredo errado, URL errado, integração nunca criada — NADA é
+// confirmado, e sem esta guarda TODAS as reservas seriam libertadas 20
+// minutos depois de serem feitas e os lugares revendidos, em silêncio, para
+// o resto da vida da implantação.
 //
-// Por isso recusamos reconciliar quando as provas parecem INCOMPLETAS, e
-// não apenas quando faltam de todo. `marca` é a marca de água gravada pelo
-// semear_ — uma linha à frente da última submissão com reserva legível (ver
-// marcaSemeadura_): as linhas anteriores estão isentas (a folha tem ~49
-// linhas históricas cujo `Reserva` nunca foi escrito, e essas não podem
-// travar a reconciliação para sempre), mas
-// todas as posteriores têm de trazer uma reserva legível. O widget tem
-// OBRIGATORIO = true, logo uma submissão nova sem reserva não é um
-// hóspede que não escolheu: é o espelho partido.
-//
-// O resultado é trocar uma sobre-reserva silenciosa por uma libertação
-// conservadora a menos, que é a direção escolhida em todo o resto deste
-// desenho.
-function submissoesFiaveis_(submissoes, idxColuna, marca) {
-  if (idxColuna < 0) return false;
-  var inicio = marca > 1 ? marca : 1;
-  for (var i = inicio; i < (submissoes || []).length; i++) {
-    var v = normalizarReserva_((submissoes[i] || [])[idxColuna]);
-    if (!FORMATO_RESERVA_COMPLETO.test(v)) return false;
-  }
-  return true;
-}
-
-// Marca de água ainda não registada conta como 0, ou seja o regime mais
-// estrito: sem saber quais as linhas históricas, todas as linhas têm de
-// trazer reserva. Falhar para o lado de não libertar nada é preferível a
-// libertar reservas reais.
-function marcaDe_(io) {
-  if (!io.marcaSubmissoes) return 0;
-  var n = Number(io.marcaSubmissoes());
-  return isFinite(n) && n > 0 ? Math.floor(n) : 0;
+// Enquanto não houver prova de que o webhook funciona, não se liberta nada.
+// O preço é o oposto: as órfãs ficam presas e um slot pode aparecer cheio
+// sem estar. Isso é visível ao dono e corrigível à mão; a sobre-reserva
+// silenciosa não é nem uma coisa nem outra.
+function primeiroWebhookChegou_(io) {
+  if (!io.ultimoWebhook) return false;
+  var v = io.ultimoWebhook();
+  return !!(v && String(v).trim());
 }
 
 // Ponto de entrada único da reconciliação, partilhado pelo POST e pelo GET.
@@ -389,47 +282,26 @@ function marcaDe_(io) {
 // Devolve quantas linhas expirou.
 //
 // `excluirIndice` é a linha de quem está a pedir (-1 quando não há nenhuma).
-// O plano é calculado sobre TODO o registo, e a reconciliação casa por
-// contagens e não por identidade, pelo que a linha do próprio token pode
-// sair no plano — mesmo quando é ela que tem submissão. Sem esta exclusão,
-// um hóspede que tentasse trocar para um horário cheio recebia a recusa E
-// perdia a reserva que já tinha confirmada, contra o invariante que o
-// reservar_ documenta: a capacidade é verificada ANTES de libertar a
-// escolha anterior.
-// As três recusas abaixo vão para o registo de execução. A recusa em si é
-// deliberada — libertar a menos é a direção escolhida em todo este desenho —
-// mas o SILÊNCIO não era: uma única linha sem reserva legível depois da marca
-// (uma nota que o dono escreveu na Form responses, uma linha vinda de outro
-// formulário) trava a reconciliação durante toda a vida da implantação, e
-// quem fosse investigar "por que é que as órfãs nunca são libertadas?" não
-// tinha absolutamente nada onde olhar.
+// O plano é calculado sobre TODO o registo, pelo que a linha do próprio
+// token pode sair nele — basta o hóspede demorar mais de 20 minutos entre a
+// primeira submissão e uma troca de horário. Sem esta exclusão, um hóspede
+// que tentasse trocar para um horário cheio recebia a recusa E perdia o
+// lugar que já tinha, contra o invariante que o reservar_ documenta: a
+// capacidade é verificada ANTES de libertar a escolha anterior.
+//
+// A recusa por falta de webhook vai para o registo de execução. A recusa em
+// si é deliberada, mas o SILÊNCIO não: quem fosse investigar "por que é que
+// as órfãs nunca são libertadas?" não tinha nada onde olhar.
 function reconciliar_(io, excluirIndice) {
-  var submissoes = io.lerSubmissoes();
-  if (!submissoes || !submissoes.length) {
-    console.log("Reconciliação não corre: não há aba das respostas legível.");
+  if (!primeiroWebhookChegou_(io)) {
+    console.log("Reconciliação não corre: ainda não chegou nenhum webhook da " +
+      "JotForm. Enquanto não chegar nenhum, não se liberta nada — senão um " +
+      "webhook mal configurado revendia todos os lugares já vendidos. " +
+      "Confirme a integração e o segredo (ver preparar()).");
     return 0;
   }
 
-  var idx = colunaReserva_(submissoes);
-  // -1 = não sabemos ler a coluna. Reconciliar às cegas libertaria reservas
-  // reais e reabriria lugares. Preferimos recusar.
-  if (idx < 0) {
-    console.log("Reconciliação não corre: não encontrei nenhuma coluna com " +
-      "reservas no formato AAAA-MM-DD | HH:MM-HH:MM na aba das respostas.");
-    return 0;
-  }
-  var marca = marcaDe_(io);
-  if (!submissoesFiaveis_(submissoes, idx, marca)) {
-    console.log("Reconciliação não corre: há linhas a partir da " + marca +
-      " (marca de água) sem reserva legível na coluna " + (idx + 1) +
-      " da aba das respostas. Ou o espelho do JotForm deixou de escrever, " +
-      "ou alguém escreveu linhas à mão nessa aba.");
-    return 0;
-  }
-
-  var bruto = planoReconciliacao_(
-    io.lerReservas(), contarSubmissoes_(submissoes, idx), io.agora(), JANELA_ORFAS_MS
-  );
+  var bruto = planoReconciliacao_(io.lerReservas(), io.agora(), JANELA_ORFAS_MS);
 
   var plano = [];
   for (var i = 0; i < bruto.length; i++) {
@@ -439,210 +311,6 @@ function reconciliar_(io, excluirIndice) {
 
   io.expirar(plano);
   return plano.length;
-}
-
-// ===============================
-// SEMEADURA A PARTIR DAS SUBMISSÕES
-// ===============================
-// Na instalação a aba Reservas nasce vazia, mas a Form responses já tem
-// reservas futuras vendidas a hóspedes reais. Sem as trazer para o registo,
-// a ocupação em vivo é zero e esses lugares são vendidos OUTRA VEZ —
-// reproduzido: três submissões para um slot de três lugares e o reservar_
-// ainda devolvia "novo" três vezes, seis pequenos-almoços para três lugares.
-//
-// A mesma causa morde do outro lado mais tarde: essas linhas de submissão
-// contam para sempre em contarSubmissoes_, logo o excedente da
-// reconciliação ficaria negativo naquele slot e mascararia órfãs reais para
-// sempre. Uma linha semeada tem a sua própria submissão, logo o excedente
-// dá 0 e as duas metades do problema desaparecem.
-
-// Token determinístico derivado do índice da linha de origem. Tem de
-// satisfazer o ^[A-Za-z0-9-]{8,64}$ do validarPedido_, daí o enchimento a
-// zeros: "sub-1" tinha 5 caracteres e era rejeitado.
-function tokenSemeado_(indice) {
-  var s = String(indice);
-  while (s.length < 6) s = "0" + s;
-  return "sub-" + s;
-}
-
-// Procura um token em QUALQUER estado, ao contrário do linhaDoToken_ que só
-// olha para as activas. Serve para não reutilizar o token de uma linha de
-// origem já semeada, e para não ressuscitar uma linha semeada que o dono
-// tenha cancelado à mão (mudar `estado` para `expirado`, como o guia
-// autoriza) — uma segunda semeadura não pode desfazer um cancelamento.
-function tokenExiste_(linhas, token) {
-  for (var i = 1; i < (linhas || []).length; i++) {
-    if (String(((linhas[i] || [])[COL_TOKEN])).trim() === token) return true;
-  }
-  return false;
-}
-
-// Quantas linhas do registo pertencem a este slot, em QUALQUER estado — ao
-// contrário do activos_, que só conta as activas. É esta a contagem que a
-// semeadura usa, e a razão é que uma linha `expirado` já teve o seu destino
-// decidido, mas a SUBMISSÃO correspondente fica na folha das respostas para
-// sempre.
-//
-// Reproduzido a contar só as activas: uma reserva feita pelo widget, o dono
-// muda `estado` para `expirado` (cancelamento por telefone, que o guia
-// autoriza), e o semear_ seguinte dava semeadas: 1 e uma linha sub-000001
-// activa novinha — desfazia o cancelamento. E pior: como a submissão daquele
-// hóspede continua a contar em contarSubmissoes_, o excedente daquele slot
-// dá 0 e a reconciliação NUNCA pode libertar a linha nova. O lugar que o
-// dono libertou ficava bloqueado para sempre, sem remédio nenhum.
-//
-// O preço desta escolha, dito por inteiro: uma linha `expirado` que não
-// corresponda a submissão nenhuma (uma reserva abandonada que a reconciliação
-// libertou) também conta aqui. Num slot que tenha ao mesmo tempo submissões
-// sem linha no registo e linhas assim libertadas, a semeadura fica uma linha
-// curta. Não há como distinguir os dois casos — a reconciliação casa por
-// contagens e não por identidade, e as duas escrevem o mesmo `expirado` — e
-// entre desfazer uma decisão explícita do dono e semear uma linha a menos
-// num cruzamento raro, preferimos não desfazer a decisão dele.
-function linhasDoSlot_(linhas, data, horario) {
-  var n = 0;
-  for (var i = 1; i < (linhas || []).length; i++) {
-    var l = linhas[i] || [];
-    if (normalizarData_(l[COL_DATA]) !== data) continue;
-    if (String(l[COL_HORARIO]).trim() !== horario) continue;
-    n++;
-  }
-  return n;
-}
-
-// Que linhas acrescentar à aba Reservas. Só datas >= hoje: uma reserva
-// passada já foi consumida e semeá-la só bloquearia um lugar que ninguém
-// pode usar. Comparação de strings basta — em ISO a ordem lexicográfica é
-// cronológica.
-//
-// A decisão de semear é por CONTAGENS, como a da reconciliação, e não por
-// identidade da linha: para cada slot semeamos só o que FALTA ao registo
-// para cobrir as submissões daquele slot. Bastar "este token ainda não
-// existe" não chegava — depois de o sistema entrar em serviço, as reservas
-// normais têm tokens reais (UUID do widget) e nenhum token sub-<indice>, e
-// correr semear() outra vez criava uma segunda linha para cada uma delas.
-// Reproduzido: duas submissões, uma semeada e uma reservada pelo widget, e
-// a segunda semeadura levava a ocupação a 3.
-//
-// Assim, semear() é seguro a qualquer momento: nunca põe no registo mais
-// linhas do que há submissões. Isso importa porque o formulário pode
-// continuar a receber reservas entre a instalação do script e a passagem
-// do widget para o novo endereço.
-function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
-  var out = [];
-  if (!submissoes || !submissoes.length) return out;
-
-  var idx = colunaReserva_(submissoes);
-  // -1 = não sabemos ler a coluna. Semear às cegas não é possível, e semear
-  // a menos é o lado seguro: o pior caso é a instalação não bloquear nada.
-  if (idx < 0) return out;
-
-  // Agrupa as submissões futuras por slot, guardando o índice da linha de
-  // origem — é dele que sai o token.
-  var porSlot = {};
-  var ordem = [];
-  for (var i = 1; i < submissoes.length; i++) {
-    var v = normalizarReserva_((submissoes[i] || [])[idx]);
-    if (!FORMATO_RESERVA_COMPLETO.test(v)) continue;
-
-    var partes = v.split(" | ");
-    if (partes[0] < hoje) continue;
-
-    if (!porSlot[v]) {
-      porSlot[v] = { data: partes[0], horario: partes[1], linhas: [] };
-      ordem.push(v);
-    }
-    porSlot[v].linhas.push(i);
-  }
-
-  for (var k = 0; k < ordem.length; k++) {
-    var slot = porSlot[ordem[k]];
-    // Em QUALQUER estado: uma linha já expirada conta como coberta, senão a
-    // semeadura desfaz cancelamentos (ver linhasDoSlot_).
-    var falta = slot.linhas.length - linhasDoSlot_(reservas, slot.data, slot.horario);
-    for (var n = 0; n < slot.linhas.length && falta > 0; n++) {
-      var token = tokenSemeado_(slot.linhas[n]);
-      if (tokenExiste_(reservas, token)) continue;
-      out.push([token, slot.data, slot.horario, criadoIso_(agoraMs), ESTADO_ACTIVO]);
-      falta--;
-    }
-  }
-  return out;
-}
-
-// Onde pôr a marca de água: UMA LINHA À FRENTE da última que traz uma
-// reserva legível — e NÃO a contagem de linhas da folha.
-//
-// A diferença entre as duas é a diferença entre uma escotilha e um rombo.
-// Remarcar é o único remédio no script para uma reconciliação travada por um
-// período de espelho partido que já foi reparado, e o sintoma de a guarda
-// estar a disparar ("Sem vagas" num slot que o dono sabe vazio) é
-// indistinguível, para ele, de um espelho partido. Ou seja: a ação que ele
-// tem à mão para resolver o sintoma é exatamente a que era perigosa.
-// Reproduzido com a contagem de linhas: espelho partido, o reservar_ recusa
-// corretamente, um semear_ pelo meio, e o pedido seguinte revogava uma
-// reserva genuína (expiradas: [1]) e revendia o lugar.
-//
-// Com a marca uma à frente da última legível:
-//
-// - Espelho reparado (brancas do período partido, depois linhas boas): a
-//   última legível está no fim, as brancas ficam ANTES da marca, ficam
-//   isentas, e a reconciliação retoma. A escotilha continua a funcionar.
-// - Espelho ainda partido (as brancas são a cauda da folha): a última
-//   legível está atrás, as brancas ficam DEPOIS da marca, e a guarda
-//   MANTÉM-SE armada. Remarcar passa a ser um não-evento precisamente no
-//   caso em que era perigoso.
-//
-// Dito de outra maneira: depois de remarcar, a guarda fica armada se e só se
-// a ÚLTIMA linha da folha não tiver reserva legível — que é a definição
-// operacional de "o espelho está partido agora". É por isso que o preparar()
-// pode ser corrido outra vez sem medo.
-//
-// Sem nenhuma linha legível devolve 1, ou seja nenhuma isenção: é o regime
-// estrito do marcaDe_, pela mesma razão — sem provas de que o espelho
-// escreve, não isentamos ninguém.
-function marcaSemeadura_(submissoes, idxColuna) {
-  var ultima = 0;
-  if (idxColuna >= 0) {
-    for (var i = 1; i < (submissoes || []).length; i++) {
-      var v = normalizarReserva_((submissoes[i] || [])[idxColuna]);
-      if (FORMATO_RESERVA_COMPLETO.test(v)) ultima = i;
-    }
-  }
-  return ultima + 1;
-}
-
-// Núcleo da semeadura, com a E/S injetada para ser testável em Node.
-function semear_(io) {
-  var submissoes = io.lerSubmissoes();
-  // Sem aba de submissões não há nada a semear e nada a marcar: a marca
-  // fica por registar, o que é o regime estrito (ver marcaDe_).
-  if (!submissoes || !submissoes.length) return { semeadas: 0, marca: 0 };
-
-  var hoje = normalizarData_(new Date(io.agora()));
-  var plano = planoSemeadura_(submissoes, io.lerReservas(), hoje, io.agora());
-  for (var i = 0; i < plano.length; i++) io.acrescentar(plano[i]);
-
-  // A marca de água: daqui para a frente, toda a linha nova tem de trazer
-  // uma reserva legível, senão a reconciliação para (ver
-  // submissoesFiaveis_). Ver marcaSemeadura_ para a razão de não ser a
-  // contagem de linhas.
-  var marca = marcaSemeadura_(submissoes, colunaReserva_(submissoes));
-  if (io.gravarMarca) io.gravarMarca(marca);
-
-  return { semeadas: plano.length, marca: marca };
-}
-
-// Corre a partir do editor. O preparar() já a chama; fica separadamente
-// executável para o caso de a aba das submissões só aparecer depois.
-function semear() {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return relatar_(AVISO_OCUPADO);
-  try {
-    return relatar_("Reservas semeadas a partir das submissões: " + semear_(ioReal_()).semeadas);
-  } finally {
-    lock.releaseLock();
-  }
 }
 
 // ===============================
@@ -673,112 +341,25 @@ function reservar_(pedido, io) {
     return { ok: true, reservado: true, estado: "repetido" };
   }
 
-  var livre = activos_(linhas, data, horario) < limite;
+  var livre = ocupados_(linhas, data, horario) < limite;
 
   if (!livre) {
-    // Só aqui vale a pena ler a Form responses: é a única situação em que
-    // reconciliar pode mudar a resposta. Mantém o caminho normal rápido.
+    // Só aqui vale a pena reconciliar: é a única situação em que libertar
+    // órfãs pode mudar a resposta. Mantém o caminho normal rápido.
     if (reconciliar_(io, existente ? existente.indice : -1)) {
       linhas = io.lerReservas();
-      livre = activos_(linhas, data, horario) < limite;
+      livre = ocupados_(linhas, data, horario) < limite;
     }
   }
 
   if (!livre) return { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
 
   if (existente) io.expirar([existente.indice]);
-  io.acrescentar([pedido.token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO]);
+  io.acrescentar([
+    pedido.token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO, "", ""
+  ]);
 
   return { ok: true, reservado: true, estado: existente ? "trocado" : "novo" };
-}
-
-// ===============================
-// QUAL É A ABA DAS SUBMISSÕES
-// ===============================
-// Este ficheiro tem um princípio: procurar a COLUNA `Reserva` de forma
-// tolerante, porque todos os bugs passados deste projeto foram um nome que
-// não casava e falhou em silêncio. O nome da ABA era o único sítio onde
-// esse princípio estava abandonado — uma constante exata.
-//
-// Se a aba não se chamar literalmente "Form responses" (nome traduzido,
-// "Form Responses 1", renomeada pelo dono, recriada pela integração), o
-// lerTudo_ devolvia null e ambos os chamadores leem isso como "não
-// reconciliar". A reconciliação nunca mais correria durante toda a vida da
-// implantação: as órfãs acumulavam-se como ocupação fantasma permanente e
-// hóspedes que pagam veriam "Sem vagas" em slots vazios.
-//
-// `nomes` é a lista de nomes das abas e `ler` devolve as linhas de uma
-// delas — injetados para isto ser testável sem Apps Script.
-function escolherAbaSubmissoes_(nomes, ler) {
-  var candidatos = [];
-  for (var i = 0; i < (nomes || []).length; i++) {
-    var n = String(nomes[i] == null ? "" : nomes[i]);
-    // As nossas duas abas nunca são a das submissões, e a busca por
-    // conteúdo não as pode escolher por acidente.
-    if (n === ABA_RESERVAS || n === ABA_CAPACIDADES) continue;
-    candidatos.push(n);
-  }
-
-  // 1. O nome exato, quando existe.
-  for (var a = 0; a < candidatos.length; a++) {
-    if (candidatos[a] === ABA_SUBMISSOES) return candidatos[a];
-  }
-
-  // 2. Um nome plausível. Com UM só, é esse. Com mais do que um, o nome já
-  //    não decide e decide o CONTEÚDO: a aba com mais reservas legíveis.
-  //
-  //    O caso confirmado é uma folha com
-  //    ["Reservas","Capacidades","Form responses (backup 2025)","Form responses 1"]:
-  //    pela ordem das abas, o primeiro nome plausível é o BACKUP. E escolher
-  //    o backup é o pior resultado possível de todos os desta função — pior
-  //    do que não encontrar aba nenhuma. A marca de água ficava registada
-  //    sobre a aba morta, nunca lá apareceria uma linha nova, o
-  //    submissoesFiaveis_ passava para sempre, e então TODA a reserva
-  //    genuína futura parecia órfã e era libertada e revendida ao fim de 20
-  //    minutos. Silenciosamente, e para o resto da vida da implantação.
-  //
-  //    Os candidatos vão para o registo de execução: uma escolha errada tem
-  //    de ser visível a quem for investigar, e não uma dedução.
-  var plausiveis = [];
-  for (var b = 0; b < candidatos.length; b++) {
-    if (NOME_SUBMISSOES.test(candidatos[b])) plausiveis.push(candidatos[b]);
-  }
-  if (plausiveis.length === 1) return plausiveis[0];
-  if (plausiveis.length > 1) {
-    // Só lemos as abas quando há ambiguidade a resolver: o caminho normal
-    // (uma única aba plausível) continua a não custar leitura nenhuma.
-    var melhorNome = plausiveis[0];
-    var melhorForca = -1;
-    for (var p = 0; p < plausiveis.length; p++) {
-      var forca = forcaReservas_(ler(plausiveis[p]));
-      console.log("Aba candidata a respostas: " + plausiveis[p] +
-        " (reservas legíveis: " + forca + ")");
-      // `>` e não `>=`: em empate fica a primeira pela ordem das abas.
-      if (forca > melhorForca) {
-        melhorForca = forca;
-        melhorNome = plausiveis[p];
-      }
-    }
-    console.log("Aba das respostas escolhida: " + melhorNome);
-    return melhorNome;
-  }
-
-  // 3. Rede de segurança: a aba que tenha uma coluna com reservas legíveis.
-  //    Cobre até uma aba com um nome que não diz nada.
-  for (var c = 0; c < candidatos.length; c++) {
-    if (colunaReserva_(ler(candidatos[c])) >= 0) return candidatos[c];
-  }
-
-  return null;
-}
-
-function nomeAbaSubmissoes_() {
-  var abas = SpreadsheetApp.getActiveSpreadsheet().getSheets();
-  var nomes = [];
-  for (var i = 0; i < abas.length; i++) nomes.push(abas[i].getName());
-  return escolherAbaSubmissoes_(nomes, function (nome) {
-    return lerTudo_(nome) || [];
-  });
 }
 
 // ===============================
@@ -800,6 +381,10 @@ function lerTudo_(nome) {
   return aba.getRange(1, 1, ultima, colunas).getValues();
 }
 
+function propriedade_(chave) {
+  return PropertiesService.getScriptProperties().getProperty(chave);
+}
+
 function ioReal_() {
   return {
     // lerTudo_ devolve null só quando a ABA não existe; uma aba que existe
@@ -812,10 +397,6 @@ function ioReal_() {
       return (linhas && linhas.length) ? linhas : [CABECALHO_RESERVAS];
     },
     lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
-    lerSubmissoes: function () {
-      var nome = nomeAbaSubmissoes_();
-      return nome ? lerTudo_(nome) : null;
-    },
     acrescentar: function (linha) {
       var aba = folha_(ABA_RESERVAS, true);
       // Espelha a guarda de lerReservas: uma aba nova ou esvaziada não tem
@@ -838,12 +419,7 @@ function ioReal_() {
       }
       SpreadsheetApp.flush();
     },
-    marcaSubmissoes: function () {
-      return PropertiesService.getScriptProperties().getProperty(CHAVE_MARCA);
-    },
-    gravarMarca: function (n) {
-      PropertiesService.getScriptProperties().setProperty(CHAVE_MARCA, String(n));
-    },
+    ultimoWebhook: function () { return propriedade_(CHAVE_ULTIMO_WEBHOOK); },
     agora: function () { return Date.now(); }
   };
 }
@@ -874,19 +450,14 @@ function doGet(e) {
 
   var linhas = io.lerReservas();
 
-  // Reconciliar custa uma aquisição de lock, um getValues() inteiro da
-  // Form responses e uma regex por célula de todas as colunas. O
-  // <input type="date"> dispara `change` por segmento, logo uma data
-  // escrita à mão faz uns três GET, cada um a serializar atrás dos outros e
-  // atrás de todos os outros hóspedes — e o custo cresce com a folha das
-  // submissões para sempre.
+  // Reconciliar custa uma aquisição de lock e um getValues() inteiro da aba
+  // Reservas. O <input type="date"> dispara `change` por segmento, logo uma
+  // data escrita à mão faz uns três GET, cada um a serializar atrás dos
+  // outros e atrás de todos os outros hóspedes.
   //
   // Por isso só reconciliamos quando algum slot desta data PARECE cheio,
-  // que é exatamente o caso que este caminho existe para fechar: um slot
-  // cujos lugares fossem TODOS órfãos apareceria como "Sem vagas", ninguém
-  // chegaria a submeter contra ele, e a reconciliação do POST nunca
-  // correria. A propriedade de fecho mantém-se intacta; o custo sai do
-  // caminho normal.
+  // que é exatamente o caso que este caminho existe para fechar. A
+  // propriedade de fecho mantém-se intacta; o custo sai do caminho normal.
   if (algumSlotCheio_(linhas, data, caps)) {
     var lock = LockService.getScriptLock();
     if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
@@ -907,7 +478,7 @@ function doGet(e) {
 
   var slots = [];
   for (var i = 0; i < caps.length; i++) {
-    var usadas = activos_(linhas, data, caps[i].horario);
+    var usadas = ocupados_(linhas, data, caps[i].horario);
     slots.push({
       horario: caps[i].horario,
       capacidade: caps[i].vagas,
@@ -943,7 +514,7 @@ function doPost(e) {
   }
   try {
     return resposta_(reservar_(pedido, ioReal_()));
-  } catch (err) {
+  } catch (err2) {
     return resposta_({ ok: false, erro: "erro_interno" });
   } finally {
     lock.releaseLock();
@@ -955,9 +526,9 @@ function doPost(e) {
 // ===============================
 // O editor do Apps Script NÃO mostra o valor devolvido por uma função —
 // só mostra o painel "Registo de execução". Sem este console.log, a
-// mensagem que o dono tem de CONFIRMAR na instalação (qual a aba das
-// respostas foi encontrada, quantas reservas foram semeadas) não aparecia
-// em sítio nenhum e a confirmação era impossível.
+// mensagem que o dono tem de CONFIRMAR na instalação (se o webhook está
+// configurado, se já chegou algum) não aparecia em sítio nenhum e a
+// confirmação era impossível.
 function relatar_(mensagem) {
   console.log(mensagem);
   return mensagem;
@@ -980,12 +551,22 @@ function preparar() {
   }
 }
 
+// Uma aba Reservas de uma versão anterior tem o cabeçalho antigo, de cinco
+// colunas. As colunas são lidas por POSIÇÃO e não pelo nome, logo o script
+// funciona de qualquer maneira — mas o dono ficava sem saber o que são as
+// duas colunas novas que aparecem cheias de nomes de hóspedes.
+function garantirCabecalho_(aba) {
+  if (aba.getLastColumn() >= CABECALHO_RESERVAS.length) return;
+  aba.getRange(1, 1, 1, CABECALHO_RESERVAS.length).setValues([CABECALHO_RESERVAS]);
+}
+
 function preparar_() {
   var reservas = folha_(ABA_RESERVAS, true);
   if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
+  garantirCabecalho_(reservas);
 
-  // Texto simples nas duas colunas que o Sheets teria coagido a datas — é
-  // isto que tira o fuso da folha da equação (ver formatarTexto_). Mas SÓ
+  // Texto simples nas colunas que o Sheets teria coagido — as duas datas
+  // (ver formatarTexto_) e o quarto, porque um quarto "007" virava 7. Mas SÓ
   // enquanto a aba não tiver linhas de dados.
   //
   // A razão é uma versão anterior deste script, que deixava o appendRow
@@ -993,7 +574,7 @@ function preparar_() {
   // texto simples não converte a célula de volta à string original: uma
   // célula de data formatada como texto pode devolver o NÚMERO DE SÉRIE do
   // Sheets no getValues(), e então o normalizarData_ dá "46000". Todas as
-  // reservas guardadas ficariam invisíveis para o activos_ e os lugares
+  // reservas guardadas ficariam invisíveis para o ocupados_ e os lugares
   // delas seriam vendidos outra vez — exatamente o desastre que este
   // ficheiro existe para impedir, e desencadeado por um simples segundo
   // preparar().
@@ -1011,6 +592,7 @@ function preparar_() {
   if (reservas.getLastRow() <= 1) {
     formatarTexto_(reservas, COL_DATA);
     formatarTexto_(reservas, COL_CRIADO);
+    formatarTexto_(reservas, COL_QUARTO);
   }
 
   var caps = folha_(ABA_CAPACIDADES, true);
@@ -1022,23 +604,11 @@ function preparar_() {
     caps.appendRow(["10:15-11:00", 2]);
   }
 
-  // Só depois de as abas existirem: as reservas futuras que já foram
-  // vendidas têm de entrar no registo, senão os lugares delas aparecem
-  // livres e são vendidos outra vez.
-  //
-  // Isto corre SEMPRE, também quando o dono repete o preparar() — e o guia
-  // nunca lho proibiu. É seguro nas duas frentes: a semeadura decide por
-  // contagens e nunca duplica (ver planoSemeadura_), e a marca de água não
-  // isenta uma cauda de linhas em branco, logo repetir não desarma a guarda
-  // do espelho partido (ver marcaSemeadura_).
-  var semeadas = semear_(ioReal_()).semeadas;
-
-  // Devolvemos o nome da aba encontrada para o dono o CONFIRMAR na
-  // instalação. Se sair "NENHUMA", a reconciliação nunca correria e mais
-  // ninguém ficaria a saber.
-  var aba = nomeAbaSubmissoes_();
-  return "Abas prontas. Aba das respostas: " + (aba ? aba : "NENHUMA") +
-    ". Reservas já existentes trazidas para o registo: " + semeadas;
+  // O dono tem de CONFIRMAR isto na instalação: enquanto não tiver chegado
+  // nenhum webhook, nenhum lugar é libertado.
+  var ultimo = ioReal_().ultimoWebhook();
+  return "Abas prontas. Último webhook recebido: " + (ultimo ? ultimo : "NUNCA") +
+    (ultimo ? "" : " (enquanto for NUNCA, nenhum lugar é libertado)") + ".";
 }
 
 // Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
@@ -1080,32 +650,21 @@ if (typeof module !== "undefined") {
     capacidades_: capacidades_,
     capacidadeDe_: capacidadeDe_,
     normalizarData_: normalizarData_,
-    normalizarReserva_: normalizarReserva_,
-    activos_: activos_,
+    criadoIso_: criadoIso_,
+    criadoMs_: criadoMs_,
+    ocupaLugar_: ocupaLugar_,
+    ocupados_: ocupados_,
     algumSlotCheio_: algumSlotCheio_,
     linhaDoToken_: linhaDoToken_,
     validarPedido_: validarPedido_,
-    colunaReserva_: colunaReserva_,
-    forcaReservas_: forcaReservas_,
-    contarSubmissoes_: contarSubmissoes_,
     planoReconciliacao_: planoReconciliacao_,
-    submissoesFiaveis_: submissoesFiaveis_,
-    marcaDe_: marcaDe_,
+    primeiroWebhookChegou_: primeiroWebhookChegou_,
     reconciliar_: reconciliar_,
-    escolherAbaSubmissoes_: escolherAbaSubmissoes_,
-    tokenSemeado_: tokenSemeado_,
-    tokenExiste_: tokenExiste_,
-    marcaSemeadura_: marcaSemeadura_,
-    linhasDoSlot_: linhasDoSlot_,
-    planoSemeadura_: planoSemeadura_,
-    semear_: semear_,
-    criadoIso_: criadoIso_,
     reservar_: reservar_,
     preparar: preparar,
     doGet: doGet,
     doPost: doPost,
     limparTestes: limparTestes,
-    semear: semear,
     // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
     // testes de unidade. É exportada mesmo assim para pinar, com uma folha
     // e um SpreadsheetApp esboçados, a aritmética de índices e as chamadas

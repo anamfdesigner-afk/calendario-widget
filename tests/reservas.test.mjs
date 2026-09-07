@@ -54,11 +54,26 @@ test("capacidadeDe_ devolve -1 para um horário desconhecido", () => {
   assert.equal(gs.capacidadeDe_(caps, "23:00-23:45"), -1);
 });
 
-const CAB = ["token", "data", "horario", "criado", "estado"];
+// A ordem das colunas é estável e o `quarto`/`nome` foram acrescentados ao
+// fim: mudar a posição de uma coluna existente tornaria ilegível todas as
+// linhas já guardadas, e uma linha ilegível é um lugar vendido que deixa de
+// contar para a ocupação.
+const CAB = ["token", "data", "horario", "criado", "estado", "quarto", "nome"];
+
 const CAPS = [
   { horario: "08:00-08:45", vagas: 3 },
   { horario: "08:45-09:30", vagas: 2 }
 ];
+
+test("o cabeçalho da aba Reservas traz quarto e nome no fim", () => {
+  // Com o espelho morto, a folha das respostas tem a identidade mas não a
+  // reserva, e o registo tinha a reserva mas não a identidade: ninguém
+  // conseguia dizer quem tinha que horário.
+  const livro = livroFalso({});
+  const gsComStub = carregarCom(livro.stubs);
+  gsComStub.preparar();
+  assert.deepEqual(livro.folhas["Reservas"].dados[0], CAB);
+});
 
 test("normalizarData_ aceita Date e ISO completo", () => {
   assert.equal(gs.normalizarData_("2025-12-31"), "2025-12-31");
@@ -70,40 +85,64 @@ test("normalizarData_ aceita Date e ISO completo", () => {
   assert.equal(gs.normalizarData_(null), "");
 });
 
-test("normalizarReserva_ tolera espaçamento à volta do separador", () => {
-  assert.equal(gs.normalizarReserva_("2026-09-08|08:00-08:45"), "2026-09-08 | 08:00-08:45");
-  assert.equal(gs.normalizarReserva_("  2026-09-08   |   08:00-08:45 "), "2026-09-08 | 08:00-08:45");
-  assert.equal(gs.normalizarReserva_(null), "");
-});
+// ===============================
+// OCUPAÇÃO: ACTIVO **MAIS** CONFIRMADO
+// ===============================
 
-test("activos_ conta só o estado activo, na data e horário certos", () => {
+test("ocupados_ conta o activo e o confirmado, na data e horário certos", () => {
   const linhas = [
     CAB,
-    ["t1", "2026-09-08", "08:00-08:45", new Date(), "activo"],
-    ["t2", "2026-09-08", "08:00-08:45", new Date(), "expirado"],
-    ["t3", "2026-09-08", "08:45-09:30", new Date(), "activo"],
-    ["t4", "2026-09-09", "08:00-08:45", new Date(), "activo"]
+    ["t1", "2026-09-08", "08:00-08:45", new Date(), "activo", "", ""],
+    ["t2", "2026-09-08", "08:00-08:45", new Date(), "expirado", "", ""],
+    ["t3", "2026-09-08", "08:45-09:30", new Date(), "confirmado", "12", "Ana"],
+    ["t4", "2026-09-09", "08:00-08:45", new Date(), "activo", "", ""]
   ];
-  assert.equal(gs.activos_(linhas, "2026-09-08", "08:00-08:45"), 1);
-  assert.equal(gs.activos_(linhas, "2026-09-08", "08:45-09:30"), 1);
-  assert.equal(gs.activos_(linhas, "2026-09-10", "08:00-08:45"), 0);
+  assert.equal(gs.ocupados_(linhas, "2026-09-08", "08:00-08:45"), 1);
+  assert.equal(gs.ocupados_(linhas, "2026-09-08", "08:45-09:30"), 1);
+  assert.equal(gs.ocupados_(linhas, "2026-09-10", "08:00-08:45"), 0);
 });
 
-test("activos_ normaliza a data das células", () => {
-  const linhas = [CAB, ["t1", new Date(2026, 8, 8), "08:00-08:45", new Date(), "activo"]];
-  assert.equal(gs.activos_(linhas, "2026-09-08", "08:00-08:45"), 1);
-});
-
-test("linhaDoToken_ encontra só linhas activas", () => {
+test("uma reserva confirmada ocupa lugar tal como uma activa", () => {
+  // Contar só as activas devolvia ao mercado exatamente os lugares certos:
+  // os que o webhook já confirmou.
   const linhas = [
     CAB,
-    ["tA", "2026-09-08", "08:00-08:45", new Date(), "expirado"],
-    ["tA", "2026-09-08", "08:45-09:30", new Date(), "activo"]
+    ["t1", "2026-09-08", "08:45-09:30", new Date(), "confirmado", "12", "Ana Silva"],
+    ["t2", "2026-09-08", "08:45-09:30", new Date(), "confirmado", "14", "Rui Dias"]
+  ];
+  assert.equal(gs.ocupados_(linhas, "2026-09-08", "08:45-09:30"), 2);
+  assert.equal(gs.ocupaLugar_("activo"), true);
+  assert.equal(gs.ocupaLugar_("confirmado"), true);
+  assert.equal(gs.ocupaLugar_("expirado"), false);
+  assert.equal(gs.ocupaLugar_(""), false);
+});
+
+test("ocupados_ normaliza a data das células", () => {
+  const linhas = [CAB, ["t1", new Date(2026, 8, 8), "08:00-08:45", new Date(), "activo", "", ""]];
+  assert.equal(gs.ocupados_(linhas, "2026-09-08", "08:00-08:45"), 1);
+});
+
+test("linhaDoToken_ encontra as linhas activas e as confirmadas", () => {
+  const linhas = [
+    CAB,
+    ["tA", "2026-09-08", "08:00-08:45", new Date(), "expirado", "", ""],
+    ["tA", "2026-09-08", "08:45-09:30", new Date(), "activo", "", ""]
   ];
   assert.deepEqual(gs.linhaDoToken_(linhas, "tA"), {
     indice: 2, data: "2026-09-08", horario: "08:45-09:30"
   });
   assert.equal(gs.linhaDoToken_(linhas, "tZ"), null);
+
+  // Um hóspede que volte atrás no formulário e submeta outra vez traz o
+  // MESMO token: se a linha já confirmada não fosse encontrada, ficava com
+  // dois lugares e o primeiro, por estar `confirmado`, nunca era libertado.
+  const confirmada = [
+    CAB,
+    ["tB", "2026-09-08", "08:45-09:30", new Date(), "confirmado", "12", "Ana"]
+  ];
+  assert.deepEqual(gs.linhaDoToken_(confirmada, "tB"), {
+    indice: 1, data: "2026-09-08", horario: "08:45-09:30"
+  });
 });
 
 test("validarPedido_ rejeita cada campo inválido com o seu código", () => {
@@ -126,120 +165,64 @@ const JANELA = 20 * 60 * 1000;
 // Meio-dia LOCAL de 8/9/2026, não meio-dia UTC. O `hoje` do reservar_ vem
 // de normalizarData_(new Date(io.agora())), que usa os getters locais: com
 // um instante fixado em UTC, a leste de UTC+12 o `hoje` caía no dia
-// seguinte ao PEDIDO.data e 14 testes falhavam com data_passada.
+// seguinte ao PEDIDO.data e vários testes falhavam com data_passada.
 const AGORA = new Date(2026, 8, 8, 12, 0, 0).getTime();
 const VELHO = new Date(AGORA - 60 * 60 * 1000);   // 1 hora: fora da janela
 const NOVO = new Date(AGORA - 60 * 1000);         // 1 minuto: dentro da janela
 
-test("colunaReserva_ encontra a coluna pelo cabeçalho", () => {
-  const linhas = [
-    ["Submission Date", "Email", "Reserva", "typeA137"],
-    ["2026-09-01", "a@b.pt", "2026-09-08 | 08:00-08:45", ""]
-  ];
-  assert.equal(gs.colunaReserva_(linhas), 2);
-});
+// Prova de que o webhook já funcionou alguma vez. Sem isto a reconciliação
+// não corre — é a guarda central desta versão.
+const WEBHOOK_JA_CHEGOU = "2026-09-08T09:00:00.000Z";
 
-test("colunaReserva_ cai para a coluna cujos valores têm o formato certo", () => {
-  const linhas = [
-    ["Submission Date", "Email", "Coluna Renomeada"],
-    ["2026-09-01", "a@b.pt", "2026-09-08 | 08:00-08:45"],
-    ["2026-09-02", "c@d.pt", "2026-09-08 | 08:45-09:30"]
-  ];
-  assert.equal(gs.colunaReserva_(linhas), 2);
-});
+// ===============================
+// RECONCILIAÇÃO: UMA ÓRFÃ É UMA ACTIVA VELHA
+// ===============================
+// Deixou de se INFERIR se uma submissão se concretizou comparando contagens
+// com uma coluna da folha das respostas — coluna que nunca existiu, porque o
+// espelho do JotForm nunca escreveu nela. Agora ou o webhook confirmou, ou
+// não confirmou.
 
-test("colunaReserva_ devolve -1 quando não há nada reconhecível", () => {
-  assert.equal(gs.colunaReserva_([["Data", "Email"], ["2026-09-01", "a@b.pt"]]), -1);
-  assert.equal(gs.colunaReserva_([]), -1);
-});
-
-test("colunaReserva_ recusa uma coluna Reserva vazia (integração do JotForm não mapeada)", () => {
-  // O cabeçalho "Reserva" existe, mas nenhuma linha tem lá um valor no
-  // formato certo. Aceitar isto às cegas puxaria a contagem de submissões
-  // a zero e faria a reconciliação libertar reservas reais.
-  const linhas = [
-    ["Submission Date", "Email", "Reserva"],
-    ["2026-09-01", "a@b.pt", ""],
-    ["2026-09-02", "c@d.pt", ""]
-  ];
-  assert.equal(gs.colunaReserva_(linhas), -1);
-});
-
-test("colunaReserva_ devolve -1 para uma aba só com cabeçalho", () => {
-  assert.equal(gs.colunaReserva_([["Submission Date", "Email", "Reserva"]]), -1);
-});
-
-test("contarSubmissoes_ agrupa por valor normalizado", () => {
-  const linhas = [
-    ["Reserva"],
-    ["2026-09-08 | 08:00-08:45"],
-    ["2026-09-08|08:00-08:45"],
-    ["2026-09-08 | 08:45-09:30"],
-    [""]
-  ];
-  assert.deepEqual(gs.contarSubmissoes_(linhas, 0), {
-    "2026-09-08 | 08:00-08:45": 2,
-    "2026-09-08 | 08:45-09:30": 1
-  });
-});
-
-test("planoReconciliacao_ liberta a órfã antiga sem rasto nas submissões", () => {
+test("planoReconciliacao_ liberta a activa que já passou da janela", () => {
   const reservas = [
     CAB,
-    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
-    ["t2", "2026-09-08", "08:00-08:45", VELHO, "activo"]
+    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""],
+    ["t2", "2026-09-08", "08:00-08:45", NOVO, "activo", "", ""]
   ];
-  // Só UMA das duas chegou às submissões: a outra é órfã.
-  const subs = { "2026-09-08 | 08:00-08:45": 1 };
-  assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), [1]);
-});
-
-test("planoReconciliacao_ escolhe as mais antigas primeiro", () => {
-  const maisVelho = new Date(AGORA - 3 * 60 * 60 * 1000);
-  const reservas = [
-    CAB,
-    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
-    ["t2", "2026-09-08", "08:00-08:45", maisVelho, "activo"]
-  ];
-  // Ambas expiram; os índices vêm por ordem crescente.
-  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), [1, 2]);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [1]);
 });
 
 test("planoReconciliacao_ nunca toca em linhas dentro da janela", () => {
   const reservas = [
     CAB,
-    ["t1", "2026-09-08", "08:00-08:45", NOVO, "activo"],
-    ["t2", "2026-09-08", "08:00-08:45", NOVO, "activo"]
+    ["t1", "2026-09-08", "08:00-08:45", NOVO, "activo", "", ""],
+    ["t2", "2026-09-08", "08:00-08:45", NOVO, "activo", "", ""]
   ];
-  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), []);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), []);
 });
 
-test("planoReconciliacao_ não liberta nada quando as submissões cobrem tudo", () => {
+test("planoReconciliacao_ NUNCA liberta uma reserva confirmada", () => {
+  // Uma linha confirmada é uma reserva a valer, por muito antiga que seja.
   const reservas = [
     CAB,
-    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
-    ["t2", "2026-09-08", "08:00-08:45", VELHO, "activo"]
+    ["t1", "2026-09-08", "08:00-08:45", new Date(AGORA - 30 * 24 * 3600 * 1000), "confirmado", "12", "Ana"],
+    ["t2", "2026-09-08", "08:00-08:45", VELHO, "expirado", "", ""],
+    ["t3", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""]
   ];
-  const subs = { "2026-09-08 | 08:00-08:45": 5 };
-  assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), []);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [3]);
 });
 
-test("planoReconciliacao_ ignora linhas já expiradas", () => {
-  const reservas = [
-    CAB,
-    ["t1", "2026-09-08", "08:00-08:45", VELHO, "expirado"]
-  ];
-  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), []);
+test("planoReconciliacao_ deixa em paz uma linha sem timestamp legível", () => {
+  const reservas = [CAB, ["t1", "2026-09-08", "08:00-08:45", "", "activo", "", ""]];
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), []);
 });
 
-test("planoReconciliacao_ trata cada slot em separado", () => {
+test("planoReconciliacao_ lê o criado a partir da string ISO", () => {
   const reservas = [
     CAB,
-    ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo"],
-    ["t2", "2026-09-08", "08:45-09:30", VELHO, "activo"]
+    ["t1", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 60 * 1000), "activo", "", ""],
+    ["t2", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
   ];
-  const subs = { "2026-09-08 | 08:45-09:30": 1 };
-  assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), [1]);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [1]);
 });
 
 function ioFalso(reservas, opcoes = {}) {
@@ -247,9 +230,9 @@ function ioFalso(reservas, opcoes = {}) {
     reservas: reservas.map(l => l.slice()),
     acrescentadas: [],
     expiradas: [],
-    // A marca de água das submissões (C2). Zero = nunca registada, que é o
-    // estado de uma instalação antiga; os testes que precisam dela passam-na.
-    marca: opcoes.marca === undefined ? 0 : opcoes.marca
+    // Por omissão NUNCA chegou webhook nenhum: é o estado de uma instalação
+    // nova, e é ele que trava a reconciliação.
+    ultimoWebhook: opcoes.ultimoWebhook === undefined ? null : opcoes.ultimoWebhook
   };
   return {
     estado,
@@ -260,7 +243,6 @@ function ioFalso(reservas, opcoes = {}) {
         ["08:00-08:45", 3],
         ["08:45-09:30", 2]
       ],
-      lerSubmissoes: () => (opcoes.submissoes === undefined ? null : opcoes.submissoes),
       acrescentar: linha => {
         estado.acrescentadas.push(linha);
         estado.reservas.push(linha);
@@ -269,8 +251,7 @@ function ioFalso(reservas, opcoes = {}) {
         estado.expiradas.push(...indices);
         indices.forEach(i => { estado.reservas[i][4] = "expirado"; });
       },
-      marcaSubmissoes: () => estado.marca,
-      gravarMarca: n => { estado.marca = n; },
+      ultimoWebhook: () => estado.ultimoWebhook,
       agora: () => opcoes.agora || AGORA
     }
   };
@@ -285,23 +266,38 @@ test("reservar_ toma um lugar livre", () => {
   assert.equal(estado.acrescentadas.length, 1);
   assert.equal(estado.acrescentadas[0][0], PEDIDO.token);
   assert.equal(estado.acrescentadas[0][4], "activo");
+  // A linha nasce com o quarto e o nome vazios: são-lhe escritos na
+  // confirmação, e é a submissão que os traz.
+  assert.deepEqual(estado.acrescentadas[0].length, CAB.length);
+  assert.equal(estado.acrescentadas[0][5], "");
+  assert.equal(estado.acrescentadas[0][6], "");
 });
 
 test("reservar_ é idempotente para o mesmo token e slot", () => {
   const { io, estado } = ioFalso([
     CAB,
-    [PEDIDO.token, "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"]
+    [PEDIDO.token, "2026-09-08", "08:45-09:30", new Date(AGORA), "activo", "", ""]
   ]);
   const r = gs.reservar_(PEDIDO, io);
   assert.deepEqual(r, { ok: true, reservado: true, estado: "repetido" });
   assert.equal(estado.acrescentadas.length, 0, "não deve consumir um segundo lugar");
 });
 
+test("reservar_ é idempotente mesmo depois de o webhook ter confirmado", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    [PEDIDO.token, "2026-09-08", "08:45-09:30", new Date(AGORA), "confirmado", "12", "Ana"]
+  ]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "repetido" });
+  assert.equal(estado.acrescentadas.length, 0, "dois lugares para um hóspede");
+});
+
 test("reservar_ recusa quando o slot está cheio", () => {
   const { io, estado } = ioFalso([
     CAB,
-    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"],
-    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"]
+    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo", "", ""],
+    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "confirmado", "12", "Ana"]
   ]);
   const r = gs.reservar_(PEDIDO, io);
   assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
@@ -311,7 +307,7 @@ test("reservar_ recusa quando o slot está cheio", () => {
 test("reservar_ troca de slot sem perder o lugar antigo antes de garantir o novo", () => {
   const { io, estado } = ioFalso([
     CAB,
-    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "activo"]
+    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "activo", "", ""]
   ]);
   const r = gs.reservar_(PEDIDO, io);
   assert.deepEqual(r, { ok: true, reservado: true, estado: "trocado" });
@@ -322,9 +318,9 @@ test("reservar_ troca de slot sem perder o lugar antigo antes de garantir o novo
 test("reservar_ NÃO liberta o lugar antigo se o novo slot estiver cheio", () => {
   const { io, estado } = ioFalso([
     CAB,
-    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "activo"],
-    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"],
-    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"]
+    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "activo", "", ""],
+    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo", "", ""],
+    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo", "", ""]
   ]);
   const r = gs.reservar_(PEDIDO, io);
   assert.equal(r.reservado, false);
@@ -333,74 +329,37 @@ test("reservar_ NÃO liberta o lugar antigo se o novo slot estiver cheio", () =>
 });
 
 test("reservar_ reconcilia antes de recusar, e o lugar órfão é reaproveitado", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
   const { io, estado } = ioFalso(
     [
       CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+      ["x1", "2026-09-08", "08:45-09:30", VELHO, "activo", "", ""],
+      ["x2", "2026-09-08", "08:45-09:30", NOVO, "activo", "", ""]
     ],
-    { submissoes: [["Reserva"], ["2026-09-08 | 08:45-09:30"]] }
+    { ultimoWebhook: WEBHOOK_JA_CHEGOU }
   );
-  // Duas reservas antigas, mas só uma submissão: uma é órfã e liberta lugar.
+  // A x1 já passou dos 20 minutos sem ser confirmada: é órfã e liberta o
+  // lugar. A x2 é recente e não pode ser tocada.
   const r = gs.reservar_(PEDIDO, io);
   assert.deepEqual(r, { ok: true, reservado: true, estado: "novo" });
-  // Só o "reservado: true" não chegava: era precisamente esta a asserção
-  // que faltava para apanhar uma reconciliação que expira demasiado (o
-  // caso da marca de água) ou a linha errada (a de quem pede).
-  assert.deepEqual(estado.expiradas, [1], "exatamente UMA órfã, a mais antiga");
+  assert.deepEqual(estado.expiradas, [1], "exatamente a activa velha");
   assert.equal(estado.reservas[1][4], "expirado");
-  assert.equal(estado.reservas[2][4], "activo", "a que tem submissão sobrevive");
+  assert.equal(estado.reservas[2][4], "activo", "a recente sobrevive");
   assert.equal(estado.acrescentadas.length, 1);
-  assert.equal(estado.acrescentadas[0][0], PEDIDO.token);
-  // Capacidade 2: a x2 mais a nova. O lugar libertado foi reaproveitado
-  // uma única vez.
-  assert.equal(gs.activos_(estado.reservas, "2026-09-08", "08:45-09:30"), 2);
+  assert.equal(gs.ocupados_(estado.reservas, "2026-09-08", "08:45-09:30"), 2);
 });
 
-test("reservar_ não reconcilia quando as submissões são ilegíveis", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
+test("reservar_ não liberta reservas confirmadas para dar lugar a ninguém", () => {
+  const antigo = new Date(AGORA - 30 * 24 * 3600 * 1000);
   const { io, estado } = ioFalso(
     [
       CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+      ["x1", "2026-09-08", "08:45-09:30", antigo, "confirmado", "12", "Ana"],
+      ["x2", "2026-09-08", "08:45-09:30", antigo, "confirmado", "14", "Rui"]
     ],
-    { submissoes: [["Data", "Email"], ["2026-09-01", "a@b.pt"]] }
+    { ultimoWebhook: WEBHOOK_JA_CHEGOU }
   );
   const r = gs.reservar_(PEDIDO, io);
-  assert.equal(r.reservado, false, "sem coluna Reserva não se liberta nada");
-  assert.deepEqual(estado.expiradas, []);
-});
-
-test("reservar_ não reconcilia quando a coluna Reserva existe mas está vazia", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
-  const { io, estado } = ioFalso(
-    [
-      CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
-    ],
-    { submissoes: [
-        ["Submission Date", "Email", "Reserva"],
-        ["2026-09-01", "a@b.pt", ""],
-        ["2026-09-02", "c@d.pt", ""]
-      ] }
-  );
-  const r = gs.reservar_(PEDIDO, io);
-  assert.equal(r.reservado, false, "coluna Reserva vazia não pode libertar reservas reais");
-  assert.deepEqual(estado.expiradas, []);
-});
-
-test("reservar_ não reconcilia quando a aba de submissões não existe", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
-  const { io, estado } = ioFalso([
-    CAB,
-    ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-    ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
-  ]);
-  const r = gs.reservar_(PEDIDO, io);
-  assert.equal(r.reservado, false);
+  assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
   assert.deepEqual(estado.expiradas, []);
 });
 
@@ -418,449 +377,93 @@ test("reservar_ propaga os erros de validação", () => {
   );
 });
 
-// ===============================
-// A RECONCILIAÇÃO NÃO PODE TOCAR NA RESERVA DE QUEM PEDE
-// ===============================
+test("reservar_ guarda o criado como string ISO em UTC, não como Date", () => {
+  const { io, estado } = ioFalso([CAB]);
+  gs.reservar_(PEDIDO, io);
+  const criado = estado.acrescentadas[0][3];
+  assert.equal(typeof criado, "string", "um Date deixaria o Sheets escolher o fuso");
+  assert.match(criado, ISO_UTC);
+});
 
-test("uma troca recusada não pode revogar o lugar que o hóspede já tinha", () => {
-  const maisVelho = new Date(AGORA - 3 * 60 * 60 * 1000);
-  const velho = new Date(AGORA - 60 * 60 * 1000);
-  const { io, estado } = ioFalso(
-    [
-      CAB,
-      [PEDIDO.token, "2026-09-08", "08:00-08:45", maisVelho, "activo"],
-      ["x9", "2026-09-08", "08:00-08:45", velho, "activo"],
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
-    ],
-    { submissoes: [
-        ["Reserva"],
-        ["2026-09-08 | 08:00-08:45"],
-        ["2026-09-08 | 08:45-09:30"],
-        ["2026-09-08 | 08:45-09:30"]
-      ] }
-  );
-  // O plano é calculado sobre TODO o registo, logo inclui a linha de quem
-  // pede: no slot 08:00-08:45 há duas antigas e só uma submissão, e a mais
-  // antiga é a do próprio token. O pedido é para o 08:45-09:30, que está
-  // cheio e coberto pelas submissões — a recusa é correta, mas antes desta
-  // correção vinha acompanhada da expiração da reserva já confirmada do
-  // hóspede.
-  const r = gs.reservar_(PEDIDO, io);
-  assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
-  assert.deepEqual(estado.expiradas, [], "a reserva de quem pede tem de sobreviver à recusa");
+// ===============================
+// NADA É LIBERTADO ANTES DE CHEGAR O PRIMEIRO WEBHOOK
+// ===============================
+// É a guarda mais importante desta versão. Um webhook mal configurado —
+// segredo errado, URL errado, integração nunca criada — não confirma nada, e
+// sem esta guarda TODAS as reservas seriam libertadas 20 minutos depois de
+// serem feitas e os lugares revendidos, em silêncio.
+
+test("primeiroWebhookChegou_ só é verdade com marca gravada", () => {
+  assert.equal(gs.primeiroWebhookChegou_({ ultimoWebhook: () => null }), false);
+  assert.equal(gs.primeiroWebhookChegou_({ ultimoWebhook: () => "" }), false);
+  assert.equal(gs.primeiroWebhookChegou_({ ultimoWebhook: () => "   " }), false);
+  assert.equal(gs.primeiroWebhookChegou_({}), false, "sem a função, não há prova");
+  assert.equal(gs.primeiroWebhookChegou_({ ultimoWebhook: () => WEBHOOK_JA_CHEGOU }), true);
+});
+
+test("sem nenhum webhook recebido não se liberta NADA, nem uma activa velha", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    ["x1", "2026-09-08", "08:45-09:30", VELHO, "activo", "", ""],
+    ["x2", "2026-09-08", "08:45-09:30", VELHO, "activo", "", ""]
+  ]);
+  // Duas activas velhas num slot de dois lugares. Se a reconciliação
+  // corresse, libertava as duas e revendia os dois lugares a este pedido.
+  const r = comRegisto(() => gs.reservar_(PEDIDO, io));
+  assert.deepEqual(estado.expiradas, [], "nenhum lugar vendido pode ser revendido");
   assert.equal(estado.reservas[1][4], "activo");
+  assert.equal(estado.reservas[2][4], "activo");
+  assert.equal(estado.acrescentadas.length, 0);
+  // E diz porque é que recusou: sem isto, quem investigasse "porque é que as
+  // órfãs nunca são libertadas?" não tinha nada onde olhar.
+  assert.match(r, /não chegou nenhum webhook/);
+});
+
+test("a mesma activa velha é libertada depois de chegar um webhook", () => {
+  const reservas = [
+    CAB,
+    ["x1", "2026-09-08", "08:45-09:30", VELHO, "activo", "", ""],
+    ["x2", "2026-09-08", "08:45-09:30", VELHO, "activo", "", ""]
+  ];
+  const antes = ioFalso(reservas);
+  assert.equal(gs.reconciliar_(antes.io, -1), 0);
+  assert.deepEqual(antes.estado.expiradas, []);
+
+  const depois = ioFalso(reservas, { ultimoWebhook: WEBHOOK_JA_CHEGOU });
+  assert.equal(gs.reconciliar_(depois.io, -1), 2);
+  assert.deepEqual(depois.estado.expiradas, [1, 2]);
 });
 
 test("reconciliar_ liberta as outras órfãs mas nunca o índice excluído", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
   const { io, estado } = ioFalso(
     [
       CAB,
-      ["t1", "2026-09-08", "08:00-08:45", velho, "activo"],
-      ["t2", "2026-09-08", "08:00-08:45", velho, "activo"]
+      ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""],
+      ["t2", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""]
     ],
-    { submissoes: [["Reserva"], ["2026-09-08 | 08:00-08:45"]] }
+    { ultimoWebhook: WEBHOOK_JA_CHEGOU }
   );
-  // Excedente 1, e a candidata é a linha 1 — excluída. Nada expira.
-  assert.equal(gs.reconciliar_(io, 1), 0);
-  assert.deepEqual(estado.expiradas, []);
-  // Sem exclusão, expira.
-  assert.equal(gs.reconciliar_(io, -1), 1);
-  assert.deepEqual(estado.expiradas, [1]);
+  assert.equal(gs.reconciliar_(io, 1), 1);
+  assert.deepEqual(estado.expiradas, [2], "a linha de quem pede tem de sobreviver");
 });
 
-// ===============================
-// FIABILIDADE DAS SUBMISSÕES (MARCA DE ÁGUA)
-// ===============================
-// A guarda do colunaReserva_ é ao nível da COLUNA: basta uma linha com
-// valor certo. A premissa de que a reconciliação precisa é por LINHA: toda
-// a reserva genuína tem submissão correspondente. Quando o espelho do
-// JotForm deixa de escrever (um rótulo trocado é indistinguível de sucesso
-// — já aconteceu neste repositório), as linhas históricas válidas mantêm o
-// colunaReserva_ satisfeito, cada reserva nova parece órfã, e 20 minutos
-// depois de cada reserva o lugar é libertado e revendido, em silêncio.
-//
-// A marca de água é a contagem de linhas da Form responses no momento da
-// instalação. Linhas ANTES dela estão isentas (a folha tem ~49 linhas
-// históricas cujo `Reserva` nunca foi escrito, e essas não podem bloquear
-// a reconciliação para sempre). Linhas DEPOIS dela têm de ter todas uma
-// reserva legível — o widget tem OBRIGATORIO = true, logo uma submissão
-// nova sem reserva significa que o espelho está partido.
-
-const SUBS_ESPELHO_PARTIDO = [
-  ["Submission Date", "Email", "Reserva"],
-  ["2026-09-01", "a@b.pt", "2026-09-08 | 08:45-09:30"],
-  ["2026-09-02", "c@d.pt", ""]
-];
-
-test("submissoesFiaveis_ recusa uma linha em branco depois da marca de água", () => {
-  // Marca 1 = na instalação a aba só tinha o cabeçalho; ambas as linhas são
-  // novas, e a segunda não trouxe reserva.
-  assert.equal(gs.submissoesFiaveis_(SUBS_ESPELHO_PARTIDO, 2, 1), false);
-});
-
-test("submissoesFiaveis_ isenta as linhas históricas anteriores à marca", () => {
-  // Marca 3 = as duas linhas de dados já lá estavam na instalação.
-  assert.equal(gs.submissoesFiaveis_(SUBS_ESPELHO_PARTIDO, 2, 3), true);
-});
-
-test("submissoesFiaveis_ aceita quando todas as linhas novas têm reserva", () => {
-  const linhas = [
-    ["Submission Date", "Email", "Reserva"],
-    ["2026-09-01", "a@b.pt", ""],                          // histórica
-    ["2026-09-02", "c@d.pt", "2026-09-08 | 08:45-09:30"]   // nova, completa
-  ];
-  assert.equal(gs.submissoesFiaveis_(linhas, 2, 2), true);
-  assert.equal(gs.submissoesFiaveis_(linhas, -1, 0), false, "sem coluna não há provas");
-});
-
-test("um espelho partido não liberta nem revende reservas genuínas", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
+test("uma troca recusada não pode revogar o lugar que o hóspede já tinha", () => {
   const { io, estado } = ioFalso(
     [
       CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+      // A do próprio token já passou dos 20 minutos: um hóspede que demore a
+      // trocar de horário. Sem a exclusão, a recusa vinha acompanhada da
+      // perda do lugar que ele já tinha.
+      [PEDIDO.token, "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""],
+      ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "confirmado", "12", "Ana"],
+      ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "confirmado", "14", "Rui"]
     ],
-    { submissoes: SUBS_ESPELHO_PARTIDO, marca: 1 }
+    { ultimoWebhook: WEBHOOK_JA_CHEGOU }
   );
-  // Capacidade 2, duas reservas genuínas. Uma das submissões perdeu o
-  // valor: sem a marca de água a reconciliação via excedente 1, expirava a
-  // x1 e admitia este terceiro hóspede.
   const r = gs.reservar_(PEDIDO, io);
   assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
-  assert.deepEqual(estado.expiradas, [], "nenhuma reserva genuína pode ser revogada");
+  assert.deepEqual(estado.expiradas, [], "a reserva de quem pede tem de sobreviver");
   assert.equal(estado.reservas[1][4], "activo");
-});
-
-test("as linhas históricas em branco continuam a permitir reconciliar órfãs", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
-  const { io, estado } = ioFalso(
-    [
-      CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
-    ],
-    // Marca 3: as duas linhas já existiam antes da instalação, logo a linha
-    // em branco é histórica e não é prova de espelho partido.
-    { submissoes: SUBS_ESPELHO_PARTIDO, marca: 3 }
-  );
-  const r = gs.reservar_(PEDIDO, io);
-  assert.equal(r.reservado, true, "uma folha com histórico não pode travar a reconciliação");
-  assert.deepEqual(estado.expiradas, [1]);
-});
-
-test("reconciliar_ diz no registo porque é que recusou", () => {
-  // A recusa é deliberada (libertar a menos é a direção deste desenho); o
-  // silêncio não era. Uma linha sem reserva legível depois da marca — uma
-  // nota escrita à mão na Form responses, uma linha de outro formulário —
-  // trava a reconciliação durante toda a vida da implantação, e quem
-  // investigasse "por que é que as órfãs nunca são libertadas?" não tinha
-  // nada onde olhar.
-  const semAba = ioFalso([CAB]);
-  assert.match(
-    comRegisto(() => gs.reconciliar_(semAba.io, -1)),
-    /não corre: não há aba das respostas/
-  );
-
-  const semColuna = ioFalso([CAB], {
-    submissoes: [["Data", "Email"], ["2026-09-01", "a@b.pt"]]
-  });
-  assert.match(
-    comRegisto(() => gs.reconciliar_(semColuna.io, -1)),
-    /não corre: não encontrei nenhuma coluna/
-  );
-
-  const espelhoPartido = ioFalso([CAB], {
-    submissoes: SUBS_ESPELHO_PARTIDO, marca: 1
-  });
-  const registo = comRegisto(() => gs.reconciliar_(espelhoPartido.io, -1));
-  assert.match(registo, /marca de água/);
-  assert.match(registo, /linhas a partir da 1/, "diz qual a marca em vigor");
-  assert.match(registo, /coluna 3/, "e em que coluna procurou");
-});
-
-test("semear_ grava a marca de água uma linha à frente da última reserva legível", () => {
-  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
-  gs.semear_(io);
-  // Todas as linhas trazem reserva, logo a marca coincide com a contagem.
-  assert.equal(estado.marca, SUBMISSOES_TRES.length);
-});
-
-// ===============================
-// A MARCA DE ÁGUA NÃO É A CONTAGEM DE LINHAS
-// ===============================
-// Remarcar é o único remédio no script para uma reconciliação travada por um
-// período de espelho partido já reparado. Com a marca a valer a CONTAGEM de
-// linhas, remarcar com o espelho AINDA partido isentava as linhas em branco
-// e desarmava a guarda do C2: reproduzido, o pedido seguinte revogava uma
-// reserva genuína (expiradas: [1]) e revendia o lugar.
-//
-// A marca é UMA À FRENTE da última linha com reserva legível. As linhas em
-// branco de um período já reparado ficam ANTES dela (isentas, a
-// reconciliação retoma); as de um espelho ainda partido são a cauda da
-// folha, ficam DEPOIS dela, e a guarda mantém-se armada.
-
-test("marcaSemeadura_ nos casos de fronteira", () => {
-  const CAB_SUB = ["Submission Date", "Email", "Reserva"];
-  const BOA = "2026-09-09 | 08:00-08:45";
-
-  // Sem submissões: nada legível, logo nenhuma linha fica isenta.
-  assert.equal(gs.marcaSemeadura_([], -1), 1);
-  assert.equal(gs.marcaSemeadura_([CAB_SUB], -1), 1);
-
-  // Todas legíveis: a marca é o fim da folha, nada por verificar.
-  assert.equal(
-    gs.marcaSemeadura_([CAB_SUB, ["d", "e", BOA], ["d", "e", BOA]], 2),
-    3
-  );
-
-  // Todas em branco: regime estrito, nenhuma isenção.
-  assert.equal(gs.marcaSemeadura_([CAB_SUB, ["d", "e", ""], ["d", "e", ""]], 2), 1);
-
-  // Brancas intercaladas entre legíveis: a última legível manda.
-  assert.equal(
-    gs.marcaSemeadura_(
-      [CAB_SUB, ["d", "e", BOA], ["d", "e", ""], ["d", "e", BOA]],
-      2
-    ),
-    4
-  );
-
-  // Uma única legível no fim de uma corrida longa de brancas: o espelho
-  // voltou a escrever, logo as brancas de trás são históricas.
-  assert.equal(
-    gs.marcaSemeadura_(
-      [CAB_SUB, ["d", "e", ""], ["d", "e", ""], ["d", "e", ""], ["d", "e", BOA]],
-      2
-    ),
-    5
-  );
-
-  // Brancas na cauda: a marca fica antes delas e a guarda continua armada.
-  assert.equal(
-    gs.marcaSemeadura_(
-      [CAB_SUB, ["d", "e", BOA], ["d", "e", ""], ["d", "e", ""]],
-      2
-    ),
-    2
-  );
-
-  // Sem coluna legível não há nada em que basear isenções.
-  assert.equal(gs.marcaSemeadura_([CAB_SUB, ["d", "e", BOA]], -1), 1);
-});
-
-test("remarcar com o espelho ainda partido não desarma a guarda", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
-  const { io, estado } = ioFalso(
-    [
-      CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
-    ],
-    { submissoes: SUBS_ESPELHO_PARTIDO, marca: 1 }
-  );
-
-  // Capacidade 2, duas reservas genuínas, e a submissão mais recente sem
-  // valor: a guarda recusa reconciliar e o slot está mesmo cheio.
-  assert.deepEqual(
-    gs.reservar_(PEDIDO, io),
-    { ok: true, reservado: false, motivo: "cheio", restantes: 0 }
-  );
-  assert.deepEqual(estado.expiradas, []);
-
-  // O sintoma que o dono vê ("Sem vagas" num slot que ele sabe vazio) é
-  // indistinguível de um espelho partido, e correr semear() é o único
-  // remédio à mão dele. Não pode ser isso a abrir a porta.
-  gs.semear_(io);
-
-  assert.deepEqual(
-    gs.reservar_(PEDIDO, io),
-    { ok: true, reservado: false, motivo: "cheio", restantes: 0 },
-    "remarcar não pode admitir um terceiro hóspede"
-  );
-  assert.deepEqual(estado.expiradas, [], "nenhuma reserva genuína pode ser revogada");
-  assert.equal(estado.reservas[1][4], "activo");
-});
-
-test("remarcar depois de o espelho sarar volta a permitir reconciliar", () => {
-  const velho = new Date(AGORA - 60 * 60 * 1000);
-  const submissoes = [
-    ["Submission Date", "Email", "Reserva"],
-    ["2026-09-01", "a@b.pt", ""],                            // período partido
-    ["2026-09-02", "c@d.pt", "2026-09-08 | 08:45-09:30"]     // espelho reparado
-  ];
-  const { io, estado } = ioFalso(
-    [
-      CAB,
-      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
-      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
-    ],
-    { submissoes, marca: 1 }
-  );
-
-  // Com a marca a 1, a linha em branco do período partido é posterior à
-  // marca e trava a reconciliação para sempre.
-  assert.equal(gs.reservar_(PEDIDO, io).reservado, false);
-  assert.deepEqual(estado.expiradas, []);
-
-  // Remarcar aceita as brancas de trás como históricas — é para isto que a
-  // escotilha existe, e tem de continuar a funcionar.
-  gs.semear_(io);
-
-  assert.equal(gs.reservar_(PEDIDO, io).reservado, true);
-  assert.deepEqual(estado.expiradas, [1], "a órfã mais antiga é libertada");
-});
-
-// ===============================
-// SEMEADURA DAS RESERVAS JÁ EXISTENTES
-// ===============================
-// Na instalação a aba Reservas está vazia, mas a Form responses já tem
-// reservas futuras vendidas a hóspedes reais. Sem as semear, os lugares
-// delas aparecem livres e são vendidos outra vez.
-
-const SUBMISSOES_TRES = [
-  ["Submission Date", "Email", "Reserva"],
-  ["2026-09-01", "a@b.pt", "2026-09-09 | 08:00-08:45"],
-  ["2026-09-02", "c@d.pt", "2026-09-09 | 08:00-08:45"],
-  ["2026-09-03", "e@f.pt", "2026-09-09 | 08:00-08:45"]
-];
-
-const PEDIDO_09 = { token: "abcd-1234-efgh", data: "2026-09-09", horario: "08:00-08:45" };
-
-test("semear_ traz para o registo as reservas futuras já submetidas", () => {
-  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
-  assert.equal(gs.semear_(io).semeadas, 3);
-  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 3);
-  // Um token determinístico por linha de origem, no formato que o
-  // validarPedido_ aceita.
-  assert.deepEqual(estado.acrescentadas.map(l => l[0]), ["sub-000001", "sub-000002", "sub-000003"]);
-});
-
-test("os três lugares já vendidos não são revendidos depois de semear", () => {
-  const { io } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
-  gs.semear_(io);
-  // Capacidade 3, três reservas reais: o slot está cheio. Sem a semeadura
-  // este pedido devolvia { reservado: true, estado: "novo" } — seis
-  // pequenos-almoços vendidos para três lugares.
-  assert.deepEqual(
-    gs.reservar_(PEDIDO_09, io),
-    { ok: true, reservado: false, motivo: "cheio", restantes: 0 }
-  );
-});
-
-test("semear_ é idempotente: correr preparar() duas vezes não duplica lugares", () => {
-  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
-  gs.semear_(io);
-  assert.equal(gs.semear_(io).semeadas, 0, "a segunda passagem não semeia nada");
-  assert.equal(estado.acrescentadas.length, 3);
-});
-
-test("semear_ não duplica uma reserva que já foi feita pelo widget", () => {
-  // Depois de o sistema entrar em serviço, as reservas normais têm tokens
-  // reais (UUID do widget) e nenhum token sub-<indice>. Bastar "este token
-  // ainda não existe" criava uma SEGUNDA linha para cada uma delas.
-  const submissoes = [
-    ["Submission Date", "Reserva"],
-    ["2026-09-01", "2026-09-09 | 08:00-08:45"]
-  ];
-  const { io, estado } = ioFalso([CAB], { submissoes });
-  assert.equal(gs.semear_(io).semeadas, 1);
-
-  // O hóspede seguinte reserva pelo widget, e a submissão dele aparece.
-  gs.reservar_({ ...PEDIDO_09, token: "real-uuid-1234" }, io);
-  submissoes.push(["2026-09-10", "2026-09-09 | 08:00-08:45"]);
-  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 2);
-
-  assert.equal(gs.semear_(io).semeadas, 0, "duas submissões, duas linhas — não três");
-  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 2);
-});
-
-test("semear_ apanha as reservas que entraram depois da instalação", () => {
-  // O formulário continua a receber reservas entre a instalação do script e
-  // a passagem do widget para o novo endereço: essas linhas não têm reserva
-  // nenhuma no registo e os lugares delas seriam revendidos.
-  const submissoes = [["Submission Date", "Reserva"], ["2026-09-01", "2026-09-09 | 08:00-08:45"]];
-  const { io, estado } = ioFalso([CAB], { submissoes });
-  gs.semear_(io);
-  submissoes.push(["2026-09-05", "2026-09-09 | 08:00-08:45"]);
-
-  assert.equal(gs.semear_(io).semeadas, 1);
-  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 2);
-});
-
-test("semear_ não ressuscita uma linha semeada que o dono cancelou à mão", () => {
-  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
-  gs.semear_(io);
-  // O guia autoriza mudar `estado` para `expirado` (cancelamento por
-  // telefone). Uma segunda semeadura não pode desfazer isso.
-  estado.reservas[1][4] = "expirado";
-  assert.equal(gs.semear_(io).semeadas, 0);
-});
-
-test("semear_ não ressuscita uma reserva do widget cancelada à mão", () => {
-  // O guia autoriza cancelar uma reserva mudando `estado` para `expirado`
-  // (cancelamento por telefone). A linha de submissão daquele hóspede FICA na
-  // folha para sempre, e decidir a semeadura só pelas linhas ACTIVAS lia
-  // aquele slot como "falta uma": a semeadura seguinte criava uma linha
-  // sub-<indice> nova e bloqueava outra vez o lugar que o dono libertou.
-  //
-  // Pior: por a submissão continuar a contar em contarSubmissoes_, o
-  // excedente daquele slot dá 0 e a reconciliação NUNCA pode libertar essa
-  // linha nova — o lugar ficava bloqueado para sempre.
-  const submissoes = [
-    ["Submission Date", "Reserva"],
-    ["2026-09-01", "2026-09-09 | 08:00-08:45"]
-  ];
-  const { io, estado } = ioFalso([CAB], { submissoes });
-
-  gs.reservar_({ ...PEDIDO_09, token: "real-uuid-1234" }, io);
-  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 1);
-
-  estado.reservas[1][4] = "expirado";
-
-  assert.equal(gs.semear_(io).semeadas, 0, "o lugar libertado não pode ser bloqueado outra vez");
-  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 0);
-});
-
-test("planoSemeadura_ ignora submissões de datas passadas", () => {
-  const submissoes = [
-    ["Reserva"],
-    ["2026-09-01 | 08:00-08:45"],   // passado: o lugar já foi consumido
-    ["2026-09-08 | 08:00-08:45"],   // hoje: conta
-    ["2026-09-09 | 08:00-08:45"]    // futuro: conta
-  ];
-  const plano = gs.planoSemeadura_(submissoes, [CAB], "2026-09-08", AGORA);
-  assert.deepEqual(plano.map(l => [l[1], l[2]]), [
-    ["2026-09-08", "08:00-08:45"],
-    ["2026-09-09", "08:00-08:45"]
-  ]);
-});
-
-test("planoSemeadura_ ignora linhas sem reserva legível e abas ilegíveis", () => {
-  const submissoes = [
-    ["Submission Date", "Email", "Reserva"],
-    ["2026-09-01", "a@b.pt", ""],
-    ["2026-09-02", "c@d.pt", "qualquer coisa"],
-    ["2026-09-03", "e@f.pt", "2026-09-09 | 08:00-08:45"]
-  ];
-  assert.equal(gs.planoSemeadura_(submissoes, [CAB], "2026-09-08", AGORA).length, 1);
-  assert.deepEqual(gs.planoSemeadura_(null, [CAB], "2026-09-08", AGORA), []);
-  assert.deepEqual(
-    gs.planoSemeadura_([["Data", "Email"], ["2026-09-01", "a@b.pt"]], [CAB], "2026-09-08", AGORA),
-    []
-  );
-});
-
-test("uma reserva semeada satisfaz-se a si mesma na reconciliação", () => {
-  // Cada linha semeada tem a sua própria submissão, logo o excedente é 0 e
-  // a reconciliação não a liberta — nem passados os 20 minutos.
-  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
-  gs.semear_(io);
-  const submissoes = gs.contarSubmissoes_(SUBMISSOES_TRES, 2);
-  const depois = AGORA + 60 * 60 * 1000;
-  assert.deepEqual(gs.planoReconciliacao_(estado.reservas, submissoes, depois, JANELA), []);
 });
 
 // ===============================
@@ -904,8 +507,18 @@ function livroFalso(abas = {}, opcoes = {}) {
           return out;
         },
         setValue: v => {
+          // Permite pôr a ESCRITA a falhar sem pôr a leitura a falhar: é
+          // assim que uma reconciliação estoira sem levar atrás o GET.
+          if (opcoes.escritaExplosiva === nome) throw new Error("célula em chamas");
           if (!dados[linha - 1]) dados[linha - 1] = [];
           dados[linha - 1][coluna - 1] = v;
+        },
+        setValues: filas => {
+          filas.forEach((fila, r) => {
+            const alvo = linha - 1 + r;
+            if (!dados[alvo]) dados[alvo] = [];
+            fila.forEach((v, c) => { dados[alvo][coluna - 1 + c] = v; });
+          });
         },
         setNumberFormat: f => { formatos.push({ aba: nome, coluna, formato: f }); }
         });
@@ -975,6 +588,9 @@ function comRegisto(fn) {
 
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
+// Propriedades de uma instalação onde o webhook já chegou pelo menos uma vez.
+const CONFIGURADO = { ultimoWebhook: WEBHOOK_JA_CHEGOU };
+
 // ===============================
 // INDEPENDÊNCIA DOS DOIS FUSOS
 // ===============================
@@ -985,40 +601,28 @@ test("criadoIso_ devolve sempre ISO-8601 em UTC", () => {
   assert.equal(Date.parse(iso), AGORA);
 });
 
-test("reservar_ guarda o criado como string ISO em UTC, não como Date", () => {
-  const { io, estado } = ioFalso([CAB]);
-  gs.reservar_(PEDIDO, io);
-  const criado = estado.acrescentadas[0][3];
-  assert.equal(typeof criado, "string", "um Date deixaria o Sheets escolher o fuso");
-  assert.match(criado, ISO_UTC);
+test("criadoMs_ lê tanto a string ISO como um Date da folha", () => {
+  assert.equal(gs.criadoMs_(gs.criadoIso_(AGORA)), AGORA);
+  assert.equal(gs.criadoMs_(new Date(AGORA)), AGORA);
+  assert.equal(isFinite(gs.criadoMs_("")), false);
 });
 
-test("planoSemeadura_ guarda o criado como string ISO em UTC", () => {
-  const plano = gs.planoSemeadura_(SUBMISSOES_TRES, [CAB], "2026-09-08", AGORA);
-  assert.match(plano[0][3], ISO_UTC);
-});
+const CAPS_FOLHA = [["horario", "vagas"], ["08:00-08:45", 3], ["08:45-09:30", 2]];
 
-test("planoReconciliacao_ lê o criado a partir da string ISO", () => {
-  const reservas = [
-    CAB,
-    ["t1", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 60 * 1000), "activo"],
-    ["t2", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo"]
-  ];
-  // A primeira está fora da janela e sem submissão; a segunda está dentro.
-  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), [1]);
-});
-
-test("preparar() põe as colunas data e criado em texto simples", () => {
-  const livro = livroFalso({ "Form responses": [["Submission Date", "Reserva"]] });
+test("preparar() põe as colunas data, criado e quarto em texto simples", () => {
+  const livro = livroFalso({});
   const gsComStub = carregarCom(livro.stubs);
 
   gsComStub.preparar();
 
-  // COL_DATA = 1 e COL_CRIADO = 3 → colunas 2 e 4 da folha, formato "@".
+  // COL_DATA = 1, COL_CRIADO = 3 e COL_QUARTO = 5 → colunas 2, 4 e 6 da
+  // folha, formato "@". O quarto entra na lista porque um quarto "007" seria
+  // coagido a 7.
   const naReservas = livro.formatos.filter(f => f.aba === "Reservas");
   assert.deepEqual(naReservas, [
     { aba: "Reservas", coluna: 2, formato: "@" },
-    { aba: "Reservas", coluna: 4, formato: "@" }
+    { aba: "Reservas", coluna: 4, formato: "@" },
+    { aba: "Reservas", coluna: 6, formato: "@" }
   ]);
 });
 
@@ -1027,14 +631,13 @@ test("preparar() não reformata uma aba Reservas que já tem reservas", () => {
   // células de DATA. Pôr essa coluna a texto simples não desfaz a coerção: a
   // célula pode passar a devolver o número de série do Sheets, o
   // normalizarData_ dá "46000", e todas as reservas guardadas ficam
-  // invisíveis para o activos_ — os lugares delas seriam vendidos outra vez,
+  // invisíveis para o ocupados_ — os lugares delas seriam vendidos outra vez,
   // por causa de um segundo preparar().
   const livro = livroFalso({
     Reservas: [
       CAB,
-      ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo"]
-    ],
-    "Form responses": [["Submission Date", "Reserva"]]
+      ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo", "", ""]
+    ]
   });
   const gsComStub = carregarCom(livro.stubs);
 
@@ -1049,7 +652,7 @@ test("preparar() não reformata uma aba Reservas que já tem reservas", () => {
 });
 
 test("preparar() cria as abas e semeia as capacidades", () => {
-  const livro = livroFalso({ "Form responses": [["Submission Date", "Reserva"]] });
+  const livro = livroFalso({});
   const gsComStub = carregarCom(livro.stubs);
 
   gsComStub.preparar();
@@ -1064,145 +667,40 @@ test("preparar() cria as abas e semeia as capacidades", () => {
   ]);
 });
 
-// ===============================
-// QUAL É A ABA DAS SUBMISSÕES
-// ===============================
-
-// Data bem no futuro de propósito: o preparar() corre com o Date.now() real
-// (não com o AGORA fixo), e uma data próxima tornava este teste numa bomba
-// de relógio — deixava de semear nada quando passasse.
-const LINHAS_COM_RESERVA = [
-  ["Submission Date", "Email", "Reserva"],
-  ["2099-01-01", "a@b.pt", "2099-01-01 | 08:00-08:45"]
-];
-
-function lerDe(mapa) {
-  return nome => mapa[nome] || [];
-}
-
-test("escolherAbaSubmissoes_ prefere o nome exato", () => {
-  const nomes = ["Reservas", "Capacidades", "Respostas", "Form responses"];
-  assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe({})), "Form responses");
-});
-
-test("escolherAbaSubmissoes_ aceita nomes traduzidos ou numerados", () => {
-  assert.equal(
-    gs.escolherAbaSubmissoes_(["Reservas", "Form Responses 1"], lerDe({})),
-    "Form Responses 1"
-  );
-  assert.equal(
-    gs.escolherAbaSubmissoes_(["Reservas", "Respostas do formulário"], lerDe({})),
-    "Respostas do formulário"
-  );
-});
-
-test("escolherAbaSubmissoes_ cai para a aba que tem reservas legíveis", () => {
-  // Um nome que não diz nada: só o conteúdo a identifica.
-  const nomes = ["Reservas", "Capacidades", "Folha1"];
-  const ler = lerDe({ Folha1: LINHAS_COM_RESERVA });
-  assert.equal(gs.escolherAbaSubmissoes_(nomes, ler), "Folha1");
-});
-
-test("escolherAbaSubmissoes_ nunca escolhe as nossas próprias abas", () => {
-  // A aba Reservas tem data e horario em colunas separadas, logo nem o
-  // formato completo casa — mas não pode ser candidata de qualquer modo.
-  const ler = lerDe({ Reservas: LINHAS_COM_RESERVA, Capacidades: LINHAS_COM_RESERVA });
-  assert.equal(gs.escolherAbaSubmissoes_(["Reservas", "Capacidades"], ler), null);
-});
-
-test("escolherAbaSubmissoes_ devolve null quando não há nada reconhecível", () => {
-  assert.equal(gs.escolherAbaSubmissoes_(["Folha1"], lerDe({ Folha1: [["a"], ["b"]] })), null);
-  assert.equal(gs.escolherAbaSubmissoes_([], lerDe({})), null);
-  assert.equal(gs.escolherAbaSubmissoes_(null, lerDe({})), null);
-});
-
-// Com DOIS nomes plausíveis o nome já não decide — decide o conteúdo. O caso
-// confirmado é uma aba de backup: pela ordem das abas era ela a escolhida, a
-// marca de água ficava registada sobre uma aba morta onde nunca aparece linha
-// nova, o submissoesFiaveis_ passava para sempre, e então toda a reserva
-// genuína futura parecia órfã e era libertada e revendida.
-
-const BACKUP_MORTO = [
-  ["Submission Date", "Reserva"],
-  ["2025-01-01", "2025-01-02 | 08:00-08:45"]
-];
-
-const RESPOSTAS_VIVAS = [
-  ["Submission Date", "Reserva"],
-  ["2026-09-01", "2026-09-09 | 08:00-08:45"],
-  ["2026-09-02", "2026-09-09 | 08:45-09:30"]
-];
-
-test("forcaReservas_ mede quantas reservas legíveis a aba tem", () => {
-  assert.equal(gs.forcaReservas_(RESPOSTAS_VIVAS), 2);
-  assert.equal(gs.forcaReservas_(BACKUP_MORTO), 1);
-  assert.equal(gs.forcaReservas_([["Submission Date", "Reserva"]]), 0);
-  assert.equal(gs.forcaReservas_([]), 0);
-});
-
-test("escolherAbaSubmissoes_ entre nomes plausíveis escolhe a que tem mais reservas", () => {
-  const nomes = [
-    "Reservas", "Capacidades", "Form responses (backup 2025)", "Form responses 1"
-  ];
-  const mapa = {
-    "Form responses (backup 2025)": BACKUP_MORTO,
-    "Form responses 1": RESPOSTAS_VIVAS
-  };
-  const registo = comRegisto(() => {
-    assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe(mapa)), "Form responses 1");
-  });
-  // E os candidatos ficam no registo de execução: uma escolha errada tem de
-  // ser visível a quem investigue, não uma dedução.
-  assert.match(registo, /Form responses \(backup 2025\).*legíveis: 1/);
-  assert.match(registo, /Form responses 1.*legíveis: 2/);
-  assert.match(registo, /escolhida: Form responses 1/);
-});
-
-test("escolherAbaSubmissoes_ mantém o nome exato à frente do conteúdo", () => {
-  // O passo 1 protege o caso comum: a aba com o nome literal ganha mesmo
-  // vazia (a integração do JotForm pode ainda não estar mapeada).
-  const nomes = ["Reservas", "Form responses (backup 2025)", "Form responses"];
-  const mapa = { "Form responses (backup 2025)": RESPOSTAS_VIVAS };
-  assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe(mapa)), "Form responses");
-});
-
-test("escolherAbaSubmissoes_ com nomes plausíveis todos vazios fica no primeiro", () => {
-  // Nenhuma tem reservas legíveis (folha nova, espelho ainda não mapeado):
-  // não há conteúdo para desempatar, e a ordem das abas decide como antes.
-  const nomes = ["Reservas", "Form responses 1", "Respostas do formulário"];
-  comRegisto(() => {
-    assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe({})), "Form responses 1");
-  });
-});
-
-test("ioReal_.lerSubmissoes lê uma aba de respostas renomeada", () => {
+test("preparar() acrescenta quarto e nome ao cabeçalho de uma folha antiga", () => {
+  // Numa aba criada por uma versão anterior, as colunas novas apareciam
+  // cheias de nomes de hóspedes e sem título nenhum.
   const livro = livroFalso({
-    Reservas: [CAB],
-    Capacidades: [["horario", "vagas"], ["08:00-08:45", 3]],
-    "Respostas ao formulário (1)": LINHAS_COM_RESERVA
+    Reservas: [
+      ["token", "data", "horario", "criado", "estado"],
+      ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo"]
+    ]
   });
   const gsComStub = carregarCom(livro.stubs);
-  assert.deepEqual(gsComStub.ioReal_().lerSubmissoes(), LINHAS_COM_RESERVA);
+
+  gsComStub.preparar();
+
+  assert.deepEqual(livro.folhas["Reservas"].dados[0], CAB);
+  assert.deepEqual(
+    livro.folhas["Reservas"].dados[1],
+    ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo"],
+    "as linhas de dados ficam intactas"
+  );
 });
 
-test("ioReal_.lerSubmissoes devolve null quando não existe aba de respostas", () => {
-  const livro = livroFalso({ Reservas: [CAB] });
-  const gsComStub = carregarCom(livro.stubs);
-  assert.equal(gsComStub.ioReal_().lerSubmissoes(), null);
-});
+test("preparar() diz se já chegou algum webhook", () => {
+  // É o que o dono tem de confirmar na instalação: enquanto for NUNCA,
+  // nenhum lugar é libertado.
+  const comMarca = livroFalso({}, { propriedades: CONFIGURADO });
+  assert.match(
+    carregarCom(comMarca.stubs).preparar(),
+    /Último webhook recebido: 2026-09-08T09/
+  );
 
-test("preparar() diz qual a aba de respostas que encontrou", () => {
-  const livro = livroFalso({ "Respostas ao formulário": LINHAS_COM_RESERVA });
-  const gsComStub = carregarCom(livro.stubs);
-  const msg = gsComStub.preparar();
-  assert.match(msg, /Respostas ao formulário/);
-  assert.match(msg, /trazidas para o registo: 1/);
-});
-
-test("preparar() diz NENHUMA quando não encontra aba de respostas", () => {
-  const livro = livroFalso({});
-  const gsComStub = carregarCom(livro.stubs);
-  assert.match(gsComStub.preparar(), /Aba das respostas: NENHUMA/);
+  const semMarca = livroFalso({});
+  const msg = carregarCom(semMarca.stubs).preparar();
+  assert.match(msg, /Último webhook recebido: NUNCA/);
+  assert.match(msg, /nenhum lugar é libertado/);
 });
 
 // ===============================
@@ -1213,25 +711,22 @@ function corpo(resposta) {
   return JSON.parse(resposta.texto);
 }
 
-const CAPS_FOLHA = [["horario", "vagas"], ["08:00-08:45", 3], ["08:45-09:30", 2]];
-
 test("algumSlotCheio_ vê o slot cheio e ignora o horário fechado", () => {
   const caps = [{ horario: "08:00-08:45", vagas: 1 }, { horario: "08:45-09:30", vagas: 0 }];
   const vazio = [CAB];
-  // O horário de capacidade 0 tem 0 activos, logo passaria o >= e punha a
+  // O horário de capacidade 0 tem 0 ocupados, logo passaria o >= e punha a
   // reconciliação a correr em todos os GET.
   assert.equal(gs.algumSlotCheio_(vazio, "2026-09-08", caps), false);
-  const cheio = [CAB, ["t1", "2026-09-08", "08:00-08:45", "x", "activo"]];
+  const cheio = [CAB, ["t1", "2026-09-08", "08:00-08:45", "x", "activo", "", ""]];
   assert.equal(gs.algumSlotCheio_(cheio, "2026-09-08", caps), true);
   assert.equal(gs.algumSlotCheio_(cheio, "2026-09-09", caps), false, "só a data pedida");
 });
 
 test("doGet não pega no lock quando nenhum slot da data parece cheio", () => {
-  const livro = livroFalso({
-    Reservas: [CAB],
-    Capacidades: CAPS_FOLHA,
-    "Form responses": LINHAS_COM_RESERVA
-  });
+  const livro = livroFalso(
+    { Reservas: [CAB], Capacidades: CAPS_FOLHA },
+    { propriedades: CONFIGURADO }
+  );
   const gsComStub = carregarCom(livro.stubs);
 
   const r = corpo(gsComStub.doGet({ parameter: { data: "2026-09-08" } }));
@@ -1245,30 +740,51 @@ test("doGet não pega no lock quando nenhum slot da data parece cheio", () => {
 
 test("doGet reconcilia quando um slot parece cheio, e liberta o lugar órfão", () => {
   const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
+  const novoIso = gs.criadoIso_(Date.now() - 60 * 1000);
   const livro = livroFalso({
     Reservas: [
       CAB,
-      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo"],
-      ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo"]
+      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""],
+      ["x2", "2099-01-01", "08:45-09:30", novoIso, "activo", "", ""]
     ],
-    Capacidades: CAPS_FOLHA,
-    // Uma só submissão para duas reservas antigas: uma é órfã. É este o
-    // caso que o caminho do GET existe para fechar — sem ele o slot ficava
-    // "Sem vagas" para sempre e ninguém chegava a submeter contra ele.
-    "Form responses": [
-      ["Submission Date", "Reserva"],
-      ["2099-01-01", "2099-01-01 | 08:45-09:30"]
-    ]
-  });
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: CONFIGURADO });
   const gsComStub = carregarCom(livro.stubs);
 
+  // Sem este caminho, um slot cujos lugares fossem TODOS órfãos aparecia
+  // como "Sem vagas", ninguém chegava a submeter contra ele, e a
+  // reconciliação do POST nunca corria.
   const r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
 
   assert.deepEqual(livro.chamadas.tryLock, [5000]);
   assert.equal(livro.chamadas.releaseLock, 1);
   assert.equal(livro.folhas["Reservas"].dados[1][4], "expirado");
+  assert.equal(livro.folhas["Reservas"].dados[2][4], "activo");
   // E as contagens devolvidas já refletem a libertação, no mesmo pedido.
   assert.equal(r.slots[1].restantes, 1);
+});
+
+test("doGet não liberta nada enquanto não tiver chegado nenhum webhook", () => {
+  const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""],
+      ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: {} });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => {
+    r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+  });
+
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+  assert.equal(livro.folhas["Reservas"].dados[2][4], "activo");
+  assert.equal(r.slots[1].restantes, 0);
+  assert.match(registo, /não chegou nenhum webhook/);
 });
 
 test("doGet registra a falha da reconciliação e ainda devolve as contagens", () => {
@@ -1276,12 +792,11 @@ test("doGet registra a falha da reconciliação e ainda devolve as contagens", (
   const livro = livroFalso({
     Reservas: [
       CAB,
-      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo"],
-      ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo"]
+      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""],
+      ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""]
     ],
-    Capacidades: CAPS_FOLHA,
-    "Form responses": LINHAS_COM_RESERVA
-  }, { abaExplosiva: "Form responses" });
+    Capacidades: CAPS_FOLHA
+  }, { propriedades: CONFIGURADO, escritaExplosiva: "Reservas" });
   const gsComStub = carregarCom(livro.stubs);
 
   let r;
@@ -1293,7 +808,7 @@ test("doGet registra a falha da reconciliação e ainda devolve as contagens", (
   // o erro em silêncio escondia uma reconciliação que nunca funciona atrás
   // de um GET aparentemente perfeito.
   assert.equal(r.ok, true);
-  assert.equal(r.slots[1].restantes, 0);
+  assert.equal(r.slots[1].restantes, 0, "a libertação não aconteceu");
   assert.match(registo, /Reconciliação no GET falhou/);
   assert.equal(livro.chamadas.releaseLock, 1, "o lock tem de sair mesmo assim");
 });
@@ -1308,11 +823,55 @@ test("doGet rejeita uma data inválida sem tocar na folha", () => {
   assert.deepEqual(livro.chamadas.tryLock, []);
 });
 
+test("doGet devolve capacidades_ilegiveis quando a aba não se lê", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: [["horario", "vagas"]] });
+  const gsComStub = carregarCom(livro.stubs);
+  assert.deepEqual(corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } })), {
+    ok: false, erro: "capacidades_ilegiveis"
+  });
+});
+
+test("a resposta sai marcada como JSON", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+  const resposta = gsComStub.doGet({ parameter: { data: "2099-01-01" } });
+  assert.equal(resposta.mime, "application/json");
+});
+
+test("doGet ainda devolve contagens quando não consegue o lock", () => {
+  const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
+  const livro = livroFalso(
+    {
+      Reservas: [
+        CAB,
+        ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""],
+        ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo", "", ""]
+      ],
+      Capacidades: CAPS_FOLHA
+    },
+    { lockIndisponivel: true, propriedades: CONFIGURADO }
+  );
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+
+  // O slot parece cheio, logo tenta o lock; não o consegue e salta a
+  // reconciliação. As contagens ficam no máximo ligeiramente velhas — a
+  // decisão que conta é sempre a do POST, dentro do lock.
+  assert.deepEqual(livro.chamadas.tryLock, [5000]);
+  assert.equal(livro.chamadas.releaseLock, 0);
+  assert.equal(r.ok, true);
+  assert.equal(r.slots[1].restantes, 0);
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+});
+
 // ===============================
 // A CASCA HTTP (doPost)
 // ===============================
 // É nesta casca que todo o desenho se apoia: o mutex, o release no finally,
-// o salto oportunista quando o tryLock falha e a leitura do corpo.
+// o salto oportunista quando o tryLock falha e a leitura do corpo. E é aqui
+// que os dois tipos de pedido se distinguem: o widget manda JSON com `acao`,
+// a JotForm manda form-encoded com formID e rawRequest.
 
 function post(gsComStub, corpoTexto) {
   return corpo(gsComStub.doPost({ postData: { contents: corpoTexto } }));
@@ -1389,11 +948,11 @@ test("doPost propaga a recusa de um slot cheio", () => {
   const livro = livroFalso({
     Reservas: [
       CAB,
-      ["x1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now()), "activo"],
-      ["x2", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now()), "activo"]
+      ["x1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now()), "activo", "", ""],
+      ["x2", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now()), "confirmado", "12", "Ana"]
     ],
     Capacidades: CAPS_FOLHA
-  });
+  }, { propriedades: CONFIGURADO });
   const gsComStub = carregarCom(livro.stubs);
 
   assert.deepEqual(post(gsComStub, PEDIDO_TEXTO), {
@@ -1402,55 +961,12 @@ test("doPost propaga a recusa de um slot cheio", () => {
   assert.equal(livro.chamadas.releaseLock, 1);
 });
 
-test("doGet ainda devolve contagens quando não consegue o lock", () => {
-  const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
-  const livro = livroFalso(
-    {
-      Reservas: [
-        CAB,
-        ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo"],
-        ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo"]
-      ],
-      Capacidades: CAPS_FOLHA,
-      "Form responses": LINHAS_COM_RESERVA
-    },
-    { lockIndisponivel: true }
-  );
-  const gsComStub = carregarCom(livro.stubs);
-
-  const r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
-
-  // O slot parece cheio, logo tenta o lock; não o consegue e salta a
-  // reconciliação. As contagens ficam no máximo ligeiramente velhas — a
-  // decisão que conta é sempre a do POST, dentro do lock.
-  assert.deepEqual(livro.chamadas.tryLock, [5000]);
-  assert.equal(livro.chamadas.releaseLock, 0);
-  assert.equal(r.ok, true);
-  assert.equal(r.slots[1].restantes, 0);
-  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
-});
-
-test("doGet devolve capacidades_ilegiveis quando a aba não se lê", () => {
-  const livro = livroFalso({ Reservas: [CAB], Capacidades: [["horario", "vagas"]] });
-  const gsComStub = carregarCom(livro.stubs);
-  assert.deepEqual(corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } })), {
-    ok: false, erro: "capacidades_ilegiveis"
-  });
-});
-
-test("a resposta sai marcada como JSON", () => {
-  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
-  const gsComStub = carregarCom(livro.stubs);
-  const resposta = gsComStub.doGet({ parameter: { data: "2099-01-01" } });
-  assert.equal(resposta.mime, "application/json");
-});
-
 // ===============================
 // AS FUNÇÕES DE MANUTENÇÃO TAMBÉM PRECISAM DO LOCK
 // ===============================
 
 test("preparar() corre dentro do lock e larga-o", () => {
-  const livro = livroFalso({ "Form responses": LINHAS_COM_RESERVA });
+  const livro = livroFalso({});
   const gsComStub = carregarCom(livro.stubs);
   gsComStub.preparar();
   assert.deepEqual(livro.chamadas.tryLock, [20000]);
@@ -1461,9 +977,9 @@ test("limparTestes() apaga só as linhas de teste, dentro do lock", () => {
   const livro = livroFalso({
     Reservas: [
       CAB,
-      ["conc-teste-1", "2099-01-01", "08:00-08:45", "x", "activo"],
-      ["abcd-1234-efgh", "2099-01-01", "08:00-08:45", "x", "activo"],
-      ["conc-teste-2", "2099-01-01", "08:00-08:45", "x", "activo"]
+      ["conc-teste-1", "2099-01-01", "08:00-08:45", "x", "activo", "", ""],
+      ["abcd-1234-efgh", "2099-01-01", "08:00-08:45", "x", "activo", "", ""],
+      ["conc-teste-2", "2099-01-01", "08:00-08:45", "x", "activo", "", ""]
     ],
     Capacidades: CAPS_FOLHA
   });
@@ -1479,34 +995,17 @@ test("limparTestes() apaga só as linhas de teste, dentro do lock", () => {
 
 test("as funções de manutenção não mexem na folha sem o lock", () => {
   const abas = {
-    Reservas: [CAB, ["conc-teste-1", "2099-01-01", "08:00-08:45", "x", "activo"]],
-    Capacidades: CAPS_FOLHA,
-    "Form responses": LINHAS_COM_RESERVA
+    Reservas: [CAB, ["conc-teste-1", "2099-01-01", "08:00-08:45", "x", "activo", "", ""]],
+    Capacidades: CAPS_FOLHA
   };
   const livro = livroFalso(abas, { lockIndisponivel: true });
   const gsComStub = carregarCom(livro.stubs);
 
   assert.match(gsComStub.preparar(), /ocupada/);
   assert.match(gsComStub.limparTestes(), /ocupada/);
-  assert.match(gsComStub.semear(), /ocupada/);
-  // Nada mudou: nem semeaduras, nem apagamentos.
+  // Nada mudou: nem cabeçalhos, nem apagamentos.
   assert.equal(livro.folhas["Reservas"].dados.length, 2);
   assert.equal(livro.chamadas.releaseLock, 0);
-});
-
-test("semear() corre dentro do lock e relata quantas semeou", () => {
-  const livro = livroFalso({
-    Reservas: [CAB],
-    Capacidades: CAPS_FOLHA,
-    "Form responses": LINHAS_COM_RESERVA
-  });
-  const gsComStub = carregarCom(livro.stubs);
-
-  assert.match(gsComStub.semear(), /submissões: 1/);
-  assert.deepEqual(livro.chamadas.tryLock, [20000]);
-  assert.equal(livro.chamadas.releaseLock, 1);
-  // E gravou a marca de água nas ScriptProperties.
-  assert.equal(livro.propriedades.marcaSubmissoes, String(LINHAS_COM_RESERVA.length));
 });
 
 // ===============================
@@ -1532,7 +1031,7 @@ test("ioReal_.acrescentar dá flush depois do appendRow", () => {
     }
   });
 
-  gsComStub.ioReal_().acrescentar(["t1", "2026-09-08", "08:00-08:45", new Date(), "activo"]);
+  gsComStub.ioReal_().acrescentar(["t1", "2026-09-08", "08:00-08:45", "x", "activo", "", ""]);
 
   assert.equal(chamadas.appendRow.length, 1);
   assert.equal(chamadas.flush, 1);
@@ -1556,7 +1055,7 @@ test("ioReal_ semeia o cabeçalho numa aba Reservas vazia, e lerReservas trata [
 
   assert.deepEqual(io.lerReservas(), [CAB]);
 
-  io.acrescentar(["t1", "2026-09-08", "08:00-08:45", new Date(), "activo"]);
+  io.acrescentar(["t1", "2026-09-08", "08:00-08:45", "x", "activo", "", ""]);
 
   assert.deepEqual(linhas[0], CAB);
   assert.equal(linhas.length, 2);
@@ -1583,4 +1082,18 @@ test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha"
   // índice 1 (a segunda linha do array, cabeçalho incluído) → linha 2 da
   // folha; COL_ESTADO = 4 → coluna 5.
   assert.deepEqual(chamadasGetRange, [[2, 5]]);
+});
+
+test("ioReal_ lê a marca do último webhook das propriedades do script", () => {
+  const guardadas = { ultimoWebhook: WEBHOOK_JA_CHEGOU };
+  const gsComStub = carregarGs(CAMINHO_GS, {
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: k => (k in guardadas ? guardadas[k] : null),
+        setProperty: (k, v) => { guardadas[k] = v; }
+      })
+    }
+  });
+
+  assert.equal(gsComStub.ioReal_().ultimoWebhook(), WEBHOOK_JA_CHEGOU);
 });
