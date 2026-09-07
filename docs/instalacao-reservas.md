@@ -68,12 +68,16 @@ Em baixo, no editor, abre-se o painel **Registo de execução**. Lá aparece
 uma linha assim:
 
 ```
-Abas prontas. Último webhook recebido: NUNCA (enquanto for NUNCA, nenhum lugar é libertado).
+Abas prontas. Segredo do webhook: EM FALTA. Formulário esperado: EM FALTA. Último webhook recebido: NUNCA (enquanto for NUNCA, nenhum lugar é libertado).
 ```
 
-Nesta altura **NUNCA** é o esperado: o aviso do formulário ainda não foi
-ligado (ponto 8). Depois desse ponto, correr o `preparar` outra vez deve
-mostrar aqui uma data — e é assim que se confirma que o aviso funciona.
+**Os dois `EM FALTA` e o `NUNCA` são o esperado nesta altura**: a senha e o
+número do formulário só são guardados no ponto 8, e o aviso do formulário só é
+ligado aí. Nada disto é erro.
+
+Depois do ponto 8, correr o `preparar` outra vez deve mostrar
+`Segredo do webhook: definido`, o número do formulário, e uma data em vez de
+`NUNCA` — e é assim que se confirma que o aviso funciona.
 
 ## 6. Conferir as capacidades
 
@@ -158,7 +162,7 @@ Três coisas que também deve saber, sem alarme:
   não devolve nada da folha.
 - **"Só responde com lugares livres" é uma garantia desta versão do
   programa.** Se o programa for alterado, a garantia é a da versão nova —
-  e é essa a razão de o ponto 10 existir.
+  e é essa a razão de o ponto 9 existir.
 
 ## 8. Ligar o aviso de submissão (o passo mais importante)
 
@@ -242,41 +246,7 @@ senha do ponto 8.1 escrita de maneira diferente nas duas metades. **Avise-me**
 Para apagar a reserva de teste, mude o `estado` dessa linha para
 `expirado` (ver o Aviso no fim).
 
-## 9. Reservas que já existiam (uma única vez, à mão)
-
-Se no dia da mudança já houver reservas feitas para **hoje ou para os
-próximos dias**, o programa não tem como as descobrir sozinho: elas ficaram
-no formulário, e o campo que as devia ter copiado para a folha nunca chegou a
-funcionar. Sem as trazer para a aba **Reservas**, os lugares delas aparecem
-livres e podem ser vendidos outra vez.
-
-Enquanto forem poucas, escreva-as à mão. **Isto é a única vez em que deve
-escrever nessa aba**, e só linhas novas — ver o Aviso no fim, que continua a
-valer para tudo o resto.
-
-Uma linha por reserva, com as sete colunas por esta ordem:
-
-| token | data | horario | criado | estado | quarto | nome |
-|---|---|---|---|---|---|---|
-| `manual-1` | `2026-09-10` | `08:00-08:45` | (deixe vazio) | `confirmado` | `12` | `Ana Silva` |
-| `manual-2` | `2026-09-10` | `08:45-09:30` | (deixe vazio) | `confirmado` | `14` | `Rui Dias` |
-
-Quatro cuidados, todos com consequências:
-
-- **`estado` tem de ser `confirmado`**, escrito assim, em minúsculas. É essa
-  palavra que diz ao programa que a reserva é a valer e nunca pode ser
-  libertada. Com `activo`, o programa trata a linha como uma reserva
-  começada e não terminada, e liberta-lhe o lugar passados 20 minutos.
-- **A data é `AAAA-MM-DD`** — `2026-09-10`, nesta ordem, com os hífenes.
-- **O horário é igual ao da aba Capacidades**, letra por letra
-  (`08:00-08:45`).
-- **O `token` tem de ser diferente em cada linha.** `manual-1`, `manual-2`,
-  e assim por diante, serve perfeitamente.
-
-Só reservas de hoje em diante. As passadas já foram servidas e escrevê-las
-só bloquearia lugares que ninguém pode usar.
-
-## 10. Se mais tarde alterar o programa
+## 9. Se mais tarde alterar o programa
 
 Alterar as capacidades **não** exige republicar: são lidas da folha a cada
 pedido.
@@ -295,17 +265,15 @@ aceites. Se lhe enviar uma versão assim, digo-lho.
 
 ## Aviso
 
-Não edite a aba **Reservas**. É o programa que a mantém. Há **duas** exceções,
-e só estas:
+Não edite a aba **Reservas**. É o programa que a mantém. **Nunca acrescente
+nem apague linhas nessa aba.** A única célula que pode mudar é o `estado`:
 
 - **Cancelar uma reserva.** Se um hóspede cancelar por telefone, ou se
   quiser apagar uma reserva de teste, mude a coluna `estado` dessa linha
   para `expirado`. Isto liberta o lugar, e a linha fica registada como prova.
   Serve tanto para linhas `activo` como para linhas `confirmado`.
-- **As reservas antigas do ponto 9**, uma única vez, no dia da mudança.
 
-Não faça nada mais: não apague linhas, não acrescente linhas fora do ponto
-9, e não mude `token`, `data`, `horario` ou `criado`.
+Nada mais: não mude `token`, `data`, `horario` nem `criado`.
 
 As colunas `quarto` e `nome` são escritas pelo programa quando a reserva se
 concretiza. Pode lê-las à vontade — é para isso que existem — e corrigir um

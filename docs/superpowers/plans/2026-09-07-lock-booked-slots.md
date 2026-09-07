@@ -1,5 +1,12 @@
 # Atomic Slot Locking — Implementation Plan
 
+> **Desactualizado em parte.** Este plano descreve o `semear`, a aba
+> `Form responses` e a reconciliação por contagens como se estivessem vivos.
+> Não estão: foram substituídos pela confirmação por webhook da JotForm. A
+> peça autoritativa é
+> `docs/superpowers/specs/2026-09-07-webhook-confirmation-amendment.md` — onde
+> os dois discordarem, vale a emenda.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make breakfast slots impossible to overbook, by moving vacancy counting and seat claiming into a Google Apps Script web app that reserves atomically under `LockService`.
