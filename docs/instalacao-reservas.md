@@ -139,6 +139,19 @@ que já existem.
 
 **Envie esse URL.** É a única coisa de que preciso para ligar o formulário.
 
+### Depois de eu ligar o formulário: corra o `semear` uma vez
+
+Entre o dia em que instala o programa e o dia em que eu ligo o formulário ao
+endereço novo podem passar dias. As reservas que os hóspedes fizerem nesse
+intervalo entram no formulário mas **não** ficam registadas na aba
+**Reservas** — e os lugares delas apareceriam livres, para serem vendidos
+outra vez.
+
+**Quando eu lhe disser que o formulário já está ligado, corra a função
+`semear` uma vez**, do mesmo modo que correu o `preparar` no ponto 5
+(escolher `semear` na caixa das funções → **Executar**). Demora segundos, e
+no painel **Registo de execução** aparece quantas reservas trouxe.
+
 ### O que "Qualquer pessoa" quer dizer, exatamente
 
 "Qualquer pessoa" é necessário porque quem preenche o formulário não tem
@@ -168,6 +181,14 @@ Se alterar o próprio programa, tem de fazer **Implementar → Gerir
 implementações → (lápis) → Versão: Nova versão → Implementar**. O URL
 mantém-se.
 
+Mais uma coisa, se um dia lhe enviar uma versão nova: se essa versão usar um
+serviço da Google que a atual não usa (enviar emails, por exemplo), a
+autorização que deu na instalação já não chega. Nesse caso **corra uma vez
+uma função a partir do editor** — como fez no ponto 5 — para aparecer o ecrã
+de autorização e o aceitar. Sem isso o programa pode falhar precisamente na
+parte nova, e do lado do formulário isso vê-se como reservas que não são
+aceites. Se lhe enviar uma versão assim, digo-lho.
+
 ## Aviso
 
 Não edite a aba **Reservas**. É o programa que a mantém. Há uma única
@@ -182,8 +203,10 @@ Não faça nada mais: não acrescente linhas, não apague linhas, e não mude
 **Sobre `semear`:** existe uma função `semear` que faz só a parte do
 `preparar` que traz as reservas já existentes do formulário para a aba
 **Reservas**. Corre-se do mesmo modo. Não precisa dela na instalação — o
-`preparar` já a chama — e correr duas vezes não duplica nada. Só a use se
-eu lhe pedir.
+`preparar` já a chama — e correr duas vezes não duplica nada nem desfaz
+cancelamentos. Precisa dela **uma vez** no dia em que eu ligar o formulário
+ao programa (está explicado no ponto 7), e pode voltar a correr sempre que
+eu lhe pedir. O mesmo vale para o `preparar`: repeti-lo não estraga nada.
 
 **Sobre `limparTestes`:** Se correr a função `limparTestes` (do mesmo modo
 que correu o `preparar` no ponto 5), ela apaga apenas as linhas deixadas
