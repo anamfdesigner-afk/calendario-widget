@@ -41,9 +41,12 @@ programa só preenche células vazias, por isso o que escrever fica e a reserva
 verdadeira nunca chega a aparecer nessa linha.
 
 O valor pode demorar um pouco a aparecer — a reserva e a linha da resposta
-chegam à folha por caminhos diferentes, e o programa junta-as da próxima vez
-que alguém abrir o formulário. Se uma linha ficar sem reserva durante muito
-tempo, avise-me.
+chegam à folha por caminhos diferentes, e o programa só as junta **quando
+alguém abre o formulário e escolhe uma data**. É esse o único momento em que
+esta coluna é preenchida: num dia sem ninguém a abrir o formulário, as reservas
+da véspera ficam à espera, e aparecem todas de uma vez assim que o primeiro
+hóspede o abrir. Se uma linha ficar sem reserva depois de o formulário ter tido
+visitas, avise-me.
 
 ---
 

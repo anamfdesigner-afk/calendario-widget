@@ -2222,7 +2222,13 @@ test("doPost encaminha um webhook da JotForm e confirma a linha, dentro do lock"
   assert.match(livro.propriedades.ultimoWebhook, ISO_UTC);
 });
 
-test("uma confirmação espelha a reserva na aba das respostas, dentro do mesmo lock", () => {
+test("o webhook NÃO toca na aba das respostas: o espelho é do GET", () => {
+  // O espelho já esteve dentro deste lock de 10 s: relia a aba `Reservas`
+  // inteira (segunda vez), lia a `Form responses` inteira, escrevia e dava
+  // flush — e quase sempre para um plano VAZIO, porque a linha desta submissão
+  // ainda nem existe. Alongava a secção crítica por que as reservas dos
+  // hóspedes esperam 3,5 s e falham FECHADAS. Se alguém voltar a acrescentá-lo
+  // aqui, este teste cai.
   const livro = livroFalso({
     Reservas: [
       CAB,
@@ -2234,7 +2240,14 @@ test("uma confirmação espelha a reserva na aba das respostas, dentro do mesmo 
       respostaFalsa({ nome: "Zé", id: "9999999999999999999" }),
       respostaFalsa({ nome: "Ana Silva", id: SUBMISSAO })
     ]
-  }, { propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID } });
+  }, { propriedades: CONFIGURADO });
+
+  // Qualquer leitura OU escrita na aba das respostas passa por aqui.
+  let toques = 0;
+  const respostasFolha = livro.folhas["Form responses"];
+  const getRangeOriginal = respostasFolha.getRange;
+  respostasFolha.getRange = (...args) => { toques++; return getRangeOriginal(...args); };
+
   const gsComStub = carregarCom(livro.stubs);
 
   const r = corpo(gsComStub.doPost({
@@ -2243,44 +2256,19 @@ test("uma confirmação espelha a reserva na aba das respostas, dentro do mesmo 
   }));
 
   assert.deepEqual(r, { ok: true, confirmado: true });
-  const respostas = livro.folhas["Form responses"].dados;
-  assert.equal(respostas[2][3], "2099-01-01 | 08:45-09:30", "a linha da Ana, coluna D");
-  assert.equal(respostas[1][3], "", "a linha sem reserva correspondente fica vazia");
-  assert.equal(respostas.length, 3, "nenhuma linha é acrescentada nem apagada");
-  // Tudo dentro do mutex que o webhook já tinha tomado — não se pega noutro.
+  assert.equal(toques, 0, "dentro do lock do webhook não se lê nem escreve a aba das respostas");
+  assert.equal(livro.folhas["Form responses"].dados[2][3], "");
+  // E continua a ser um só mutex, o que o webhook já tinha.
   assert.deepEqual(livro.chamadas.tryLock, [10000]);
   assert.equal(livro.chamadas.releaseLock, 1);
-});
 
-test("um espelho que estoira não transforma uma confirmação boa numa recusa", () => {
-  // Se este erro subisse, a resposta era {ok:false}, a JotForm repetia a
-  // entrega e o anel anti-repetição já não a deixava confirmar nada: uma
-  // reserva a valer perdida por causa de uma coluna de conveniência.
-  const livro = livroFalso({
-    Reservas: [
-      CAB,
-      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", "", ""]
-    ],
-    Capacidades: CAPS_FOLHA,
-    "Form responses": [CAB_RESPOSTAS, respostaFalsa({ id: SUBMISSAO })]
-  }, {
-    propriedades: { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID },
-    escritaExplosiva: "Form responses"
-  });
-  const gsComStub = carregarCom(livro.stubs);
-
-  let r;
-  const registo = comRegisto(() => {
-    r = corpo(gsComStub.doPost({
-      parameter: webhook({ rawRequest: raw("2099-01-01 | 08:45-09:30") }),
-      postData: { type: "application/x-www-form-urlencoded", contents: "formID=" + FORM_ID }
-    }));
-  });
-
-  assert.deepEqual(r, { ok: true, confirmado: true });
-  assert.equal(livro.folhas["Reservas"].dados[1][4], "confirmado");
-  assert.match(registo, /Espelho na aba das respostas falhou/);
-  assert.equal(livro.chamadas.releaseLock, 1);
+  // Nada se perde: a passagem seguinte do GET é que espelha — com números de
+  // linha frescos e fora de qualquer lock.
+  corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+  assert.equal(livro.folhas["Form responses"].dados[2][3], "2099-01-01 | 08:45-09:30");
+  assert.equal(livro.folhas["Form responses"].dados[1][3], "",
+    "a linha sem reserva correspondente fica vazia");
+  assert.deepEqual(livro.chamadas.tryLock, [10000], "e o GET não pega em lock nenhum");
 });
 
 test("doPost recusa um webhook com o segredo errado sem tocar na folha", () => {

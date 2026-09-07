@@ -1298,24 +1298,17 @@ function doPost(e) {
     }
     try {
       var r = confirmarWebhook_(params, ioWebhook);
-      // Dentro do MESMO lock, e só depois de haver mesmo uma linha confirmada.
-      // A linha desta submissão pode ainda não existir na aba das respostas —
+      // AQUI NÃO SE ESPELHA, e não se volte a acrescentar. O espelho já
+      // esteve neste sítio: relia a aba `Reservas` inteira (a segunda vez, que
+      // o confirmarWebhook_ já a tinha lido), lia a `Form responses` inteira,
+      // escrevia e dava flush — tudo DENTRO deste lock de 10 s, e quase sempre
+      // para um plano VAZIO, porque a linha desta submissão ainda nem existe:
       // o webhook e a integração do Sheets são independentes e não têm ordem
-      // garantida entre si — e é por isso que o doGet volta a passar por aqui
-      // mais tarde: essas são apanhadas pouco depois.
-      if (r.ok && r.confirmado) {
-        try {
-          espelharRespostas_(ioWebhook);
-        } catch (errEspelho) {
-          // Espelhar é acessório: a reserva já está confirmada e o lugar
-          // protegido. Deixar este erro subir transformava uma confirmação boa
-          // num {ok:false}, a JotForm repetiria a entrega, e o anel
-          // anti-repetição já não a deixaria confirmar nada — uma reserva a
-          // valer perdida por causa de uma coluna de conveniência.
-          console.log("Espelho na aba das respostas falhou (a confirmação " +
-            "mantém-se): " + errEspelho);
-        }
-      }
+      // garantida entre si. Só alongava a secção crítica por que as reservas
+      // dos hóspedes esperam 3,5 s — e falham FECHADAS quando não a conseguem.
+      //
+      // A passagem do GET apanha tudo, e é esse o desenho: o doGet corre
+      // sempre que um hóspede abre uma data, com números de linha frescos.
       return resposta_(r.ok ? r : { ok: false });
     } catch (err) {
       console.log("Webhook falhou: " + err);
