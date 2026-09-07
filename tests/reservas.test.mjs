@@ -1706,6 +1706,38 @@ test("planoRespostas_ preenche só células vazias", () => {
   );
 });
 
+test("uma reserva cancelada não vai parar à aba das respostas", () => {
+  // Pôr o `estado` a `expirado` é o único gesto que o guia autoriza ao dono, e
+  // é como se cancela. Sem esta guarda a reserva cancelada aparecia na mesma
+  // ao lado do menu — e ficava lá para sempre, porque a célula deixava de
+  // estar vazia.
+  const reservas = reservasComSubmissao();
+  reservas[1][4] = "expirado";
+  const submissoes = respostasFalsas([{ nome: "Ana", id: ID_ANA }, { nome: "Rui", id: ID_RUI }]);
+
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservas, IDX_ID, IDX_DESTINO),
+    [{ linha: 3, coluna: 4, colunaId: 22, id: ID_RUI, valor: "2026-09-08 | 08:00-08:45" }],
+    "só a do Rui, que continua de pé"
+  );
+});
+
+test("uma data que o Sheets converteu não se propaga para a aba do dono", () => {
+  // Se a coluna `data` tiver sido coagida a célula de data, o normalizarData_
+  // devolve o número de série do Sheets. Escrever "46000 | 08:45-09:30" na aba
+  // das respostas era pôr lixo ao lado do menu do hóspede, num sítio onde nada
+  // o corrige depois: a célula deixa de estar vazia e nunca mais é preenchida.
+  const reservas = reservasComSubmissao();
+  reservas[1][1] = "46000";
+  reservas[2][2] = "8h45";
+  const submissoes = respostasFalsas([{ nome: "Ana", id: ID_ANA }, { nome: "Rui", id: ID_RUI }]);
+
+  assert.deepEqual(
+    gs.planoRespostas_(submissoes, reservas, IDX_ID, IDX_DESTINO), [],
+    "mais vale não aparecer nada do que aparecer isto"
+  );
+});
+
 test("planoRespostas_ casa um id de 19 dígitos sem perder o último", () => {
   // Se algum dos lados fosse coagido a double, os dois ids — que só diferem no
   // último dígito — normalizariam para a MESMA string e a reserva da Ana

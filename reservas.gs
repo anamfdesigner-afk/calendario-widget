@@ -947,11 +947,30 @@ function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
     var linhaR = reservas[r] || [];
     var id = normalizarId_(linhaR[COL_SUBMISSAO]);
     if (!id) continue;
+
+    // Uma reserva CANCELADA não se espelha. Pôr o `estado` a `expirado` é o
+    // único gesto que o guia autoriza ao dono; sem esta guarda, quem cancelava
+    // via a reserva aparecer na aba das respostas na mesma — e, pior, ficava
+    // lá para sempre, porque a célula deixava de estar vazia.
+    if (String(linhaR[COL_ESTADO] == null ? "" : linhaR[COL_ESTADO]).trim() ===
+        ESTADO_EXPIRADO) continue;
+
     // Um submissionID confirma no máximo UMA linha (ver o anel do
     // confirmarWebhook_), logo a primeira que se encontra é a única.
     if (Object.prototype.hasOwnProperty.call(porId, id)) continue;
-    porId[id] = normalizarData_(linhaR[COL_DATA]) + " | " +
+
+    var valor = normalizarData_(linhaR[COL_DATA]) + " | " +
       String(linhaR[COL_HORARIO] == null ? "" : linhaR[COL_HORARIO]).trim();
+
+    // E só se o valor tiver mesmo a forma de uma reserva. Se a coluna `data`
+    // tiver sido coagida a célula de data, o normalizarData_ devolve o número
+    // de série do Sheets e isto seria "46000 | 08:45-09:30" — escrito na aba
+    // do dono, ao lado do menu do hóspede, onde nada o corrige depois: a
+    // célula deixa de estar vazia e nunca mais é preenchida. Mais vale não
+    // aparecer nada do que aparecer isso.
+    if (!FORMATO_RESERVA_ANCORADO.test(valor)) continue;
+
+    porId[id] = valor;
   }
 
   for (var i = 1; i < (submissoes || []).length; i++) {
