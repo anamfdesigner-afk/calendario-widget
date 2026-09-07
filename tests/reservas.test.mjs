@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import { carregarGs } from "./carregar.mjs";
 
-const gs = carregarGs(new URL("../reservas.gs", import.meta.url).pathname);
+const CAMINHO_GS = fileURLToPath(new URL("../reservas.gs", import.meta.url));
+const gs = carregarGs(CAMINHO_GS);
 
 const CABECALHO_CAP = ["horario", "vagas"];
 
@@ -633,6 +635,162 @@ test("uma reserva semeada satisfaz-se a si mesma na reconciliação", () => {
 });
 
 // ===============================
+// LIVRO FALSO (folha de cálculo em memória)
+// ===============================
+// Um SpreadsheetApp/LockService/ContentService/PropertiesService inteiro em
+// memória. Existe porque a casca HTTP — o mutex, o release no finally, o
+// salto quando o tryLock falha, a leitura do corpo — é a peça em que todo
+// este desenho se apoia e não tinha teste nenhum.
+
+function livroFalso(abas = {}, opcoes = {}) {
+  const formatos = [];
+  const propriedades = Object.assign({}, opcoes.propriedades);
+  const folhas = {};
+  const chamadas = { tryLock: [], releaseLock: 0, flush: 0 };
+
+  function fazerFolha(nome, linhas) {
+    const dados = linhas.map(l => l.slice());
+    folhas[nome] = {
+      dados,
+      getName: () => nome,
+      getLastRow: () => dados.length,
+      getLastColumn: () => dados.reduce((m, l) => Math.max(m, l.length), 0),
+      // As folhas reais nascem com 1000 linhas, muitas delas vazias.
+      getMaxRows: () => Math.max(dados.length, 1000),
+      getRange: (linha, coluna, nLinhas = 1, nColunas = 1) => ({
+        getValues: () => {
+          const out = [];
+          for (let r = linha - 1; r < linha - 1 + nLinhas; r++) {
+            const fila = [];
+            for (let c = coluna - 1; c < coluna - 1 + nColunas; c++) {
+              const v = (dados[r] || [])[c];
+              fila.push(v === undefined ? "" : v);
+            }
+            out.push(fila);
+          }
+          return out;
+        },
+        setValue: v => {
+          if (!dados[linha - 1]) dados[linha - 1] = [];
+          dados[linha - 1][coluna - 1] = v;
+        },
+        setNumberFormat: f => { formatos.push({ aba: nome, coluna, formato: f }); }
+      }),
+      appendRow: l => { dados.push(l.slice()); },
+      deleteRow: r => { dados.splice(r - 1, 1); }
+    };
+    return folhas[nome];
+  }
+
+  Object.keys(abas).forEach(nome => fazerFolha(nome, abas[nome]));
+
+  const ss = {
+    getSheetByName: nome => folhas[nome] || null,
+    insertSheet: nome => fazerFolha(nome, []),
+    getSheets: () => Object.keys(folhas).map(n => folhas[n])
+  };
+
+  const stubs = {
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => ss,
+      flush: () => { chamadas.flush++; }
+    },
+    LockService: {
+      getScriptLock: () => ({
+        tryLock: ms => {
+          chamadas.tryLock.push(ms);
+          return opcoes.lockIndisponivel !== true;
+        },
+        releaseLock: () => { chamadas.releaseLock++; }
+      })
+    },
+    ContentService: {
+      MimeType: { JSON: "application/json" },
+      createTextOutput: function (texto) {
+        return { texto: texto, setMimeType: function (m) { this.mime = m; return this; } };
+      }
+    },
+    PropertiesService: {
+      getScriptProperties: () => ({
+        getProperty: k => (k in propriedades ? propriedades[k] : null),
+        setProperty: (k, v) => { propriedades[k] = v; }
+      })
+    }
+  };
+
+  return { stubs, folhas, formatos, propriedades, chamadas };
+}
+
+function carregarCom(stubs) {
+  return carregarGs(CAMINHO_GS, stubs);
+}
+
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+// ===============================
+// INDEPENDÊNCIA DOS DOIS FUSOS
+// ===============================
+
+test("criadoIso_ devolve sempre ISO-8601 em UTC", () => {
+  const iso = gs.criadoIso_(AGORA);
+  assert.match(iso, ISO_UTC);
+  assert.equal(Date.parse(iso), AGORA);
+});
+
+test("reservar_ guarda o criado como string ISO em UTC, não como Date", () => {
+  const { io, estado } = ioFalso([CAB]);
+  gs.reservar_(PEDIDO, io);
+  const criado = estado.acrescentadas[0][3];
+  assert.equal(typeof criado, "string", "um Date deixaria o Sheets escolher o fuso");
+  assert.match(criado, ISO_UTC);
+});
+
+test("planoSemeadura_ guarda o criado como string ISO em UTC", () => {
+  const plano = gs.planoSemeadura_(SUBMISSOES_TRES, [CAB], "2026-09-08", AGORA);
+  assert.match(plano[0][3], ISO_UTC);
+});
+
+test("planoReconciliacao_ lê o criado a partir da string ISO", () => {
+  const reservas = [
+    CAB,
+    ["t1", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 60 * 1000), "activo"],
+    ["t2", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo"]
+  ];
+  // A primeira está fora da janela e sem submissão; a segunda está dentro.
+  assert.deepEqual(gs.planoReconciliacao_(reservas, {}, AGORA, JANELA), [1]);
+});
+
+test("preparar() põe as colunas data e criado em texto simples", () => {
+  const livro = livroFalso({ "Form responses": [["Submission Date", "Reserva"]] });
+  const gsComStub = carregarCom(livro.stubs);
+
+  gsComStub.preparar();
+
+  // COL_DATA = 1 e COL_CRIADO = 3 → colunas 2 e 4 da folha, formato "@".
+  const naReservas = livro.formatos.filter(f => f.aba === "Reservas");
+  assert.deepEqual(naReservas, [
+    { aba: "Reservas", coluna: 2, formato: "@" },
+    { aba: "Reservas", coluna: 4, formato: "@" }
+  ]);
+});
+
+test("preparar() cria as abas e semeia as capacidades", () => {
+  const livro = livroFalso({ "Form responses": [["Submission Date", "Reserva"]] });
+  const gsComStub = carregarCom(livro.stubs);
+
+  gsComStub.preparar();
+
+  assert.deepEqual(livro.folhas["Reservas"].dados, [CAB]);
+  assert.deepEqual(livro.folhas["Capacidades"].dados, [
+    ["horario", "vagas"],
+    ["08:00-08:45", 3],
+    ["08:45-09:30", 2],
+    ["09:30-10:15", 3],
+    ["10:15-11:00", 2]
+  ]);
+});
+
+// ===============================
 // ioReal_ (E/S real, com SpreadsheetApp esboçado)
 // ===============================
 // Estes testes carregam o .gs de novo com um SpreadsheetApp falso, porque o
@@ -648,7 +806,7 @@ test("ioReal_.acrescentar dá flush depois do appendRow", () => {
     appendRow: linha => chamadas.appendRow.push(linha)
   };
   const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
-  const gsComStub = carregarGs(new URL("../reservas.gs", import.meta.url).pathname, {
+  const gsComStub = carregarGs(CAMINHO_GS, {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ssFalso,
       flush: () => { chamadas.flush++; }
@@ -672,7 +830,7 @@ test("ioReal_ semeia o cabeçalho numa aba Reservas vazia, e lerReservas trata [
     appendRow: linha => linhas.push(linha.slice())
   };
   const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
-  const gsComStub = carregarGs(new URL("../reservas.gs", import.meta.url).pathname, {
+  const gsComStub = carregarGs(CAMINHO_GS, {
     SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
   });
   const io = gsComStub.ioReal_();
@@ -697,7 +855,7 @@ test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha"
     }
   };
   const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
-  const gsComStub = carregarGs(new URL("../reservas.gs", import.meta.url).pathname, {
+  const gsComStub = carregarGs(CAMINHO_GS, {
     SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
   });
 

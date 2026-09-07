@@ -71,8 +71,14 @@ function capacidadeDe_(caps, horario) {
 // NORMALIZAÇÃO (funções puras)
 // ===============================
 // O Sheets devolve células de data como Date, e às vezes como ISO
-// completo. Só queremos AAAA-MM-DD, em hora local (o fuso do projeto tem
-// de ser Europe/Lisbon).
+// completo. Só queremos AAAA-MM-DD.
+//
+// O preparar() força as colunas `data` e `criado` da aba Reservas a texto
+// simples, precisamente para que o ramo da string seja o único que corre em
+// vivo (ver formatarTexto_). O ramo do Date fica por robustez — uma folha
+// preparada à mão, ou uma coluna reformatada por acidente, não pode fazer o
+// script deixar de contar reservas. Esse ramo usa os getters locais, logo
+// depende do fuso do projeto; é por isso que não queremos depender dele.
 function normalizarData_(v) {
   if (v instanceof Date) {
     var mes = String(v.getMonth() + 1);
@@ -89,6 +95,30 @@ function normalizarData_(v) {
 // Aceita "a|b" e "a | b" como o mesmo valor.
 function normalizarReserva_(v) {
   return String(v == null ? "" : v).trim().replace(/\s*\|\s*/, " | ");
+}
+
+// O Apps Script tem DOIS fusos independentes: o do projeto (o que o guia
+// manda pôr em Europe/Lisbon) e o da própria folha de cálculo, que o guia
+// nunca mencionava. O getValues() constrói as células de data em Date com o
+// fuso DA FOLHA; o getMonth()/getDate() do normalizarData_ lê-as no fuso DO
+// PROJETO. Quando os dois discordam, uma linha guardada à meia-noite lê-se
+// como o dia anterior, e o activos_, o linhaDoToken_ e a chave da
+// reconciliação deslizam todos com ela: lugares revendidos no dia real e
+// bloqueados no dia anterior. O mesmo deslize pode fazer uma reserva
+// recém-criada parecer mais velha, colapsar a janela dos 20 minutos e
+// torná-la elegível a órfã antes de a submissão sequer existir.
+//
+// Em vez de confiar em qualquer das duas definições, guardamos o `criado`
+// como ISO-8601 em UTC (uma string lê-se igual em qualquer fuso) e o
+// preparar() põe as colunas `data` e `criado` em texto simples, para o
+// Sheets não voltar a coagir a string numa célula de data — coisa que o
+// appendRow faz de livre vontade.
+function criadoIso_(ms) {
+  return new Date(ms).toISOString();
+}
+
+function formatarTexto_(aba, coluna) {
+  aba.getRange(1, coluna + 1, aba.getMaxRows(), 1).setNumberFormat("@");
 }
 
 // ===============================
@@ -227,6 +257,9 @@ function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
     var l = reservas[i] || [];
     if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
 
+    // Em vivo o `criado` é sempre a string ISO-8601 UTC escrita pelo
+    // criadoIso_, e o Date.parse lê-a sem depender de fuso nenhum. O ramo
+    // do Date fica para uma folha antiga ou reformatada à mão.
     var criado = l[COL_CRIADO] instanceof Date
       ? l[COL_CRIADO].getTime()
       : Date.parse(String(l[COL_CRIADO]));
@@ -398,7 +431,7 @@ function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
     var token = tokenSemeado_(i);
     if (tokenExiste_(reservas, token)) continue;
 
-    out.push([token, data, horario, new Date(agoraMs), ESTADO_ACTIVO]);
+    out.push([token, data, horario, criadoIso_(agoraMs), ESTADO_ACTIVO]);
   }
   return out;
 }
@@ -477,7 +510,7 @@ function reservar_(pedido, io) {
   if (!livre) return { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
 
   if (existente) io.expirar([existente.indice]);
-  io.acrescentar([pedido.token, data, horario, new Date(io.agora()), ESTADO_ACTIVO]);
+  io.acrescentar([pedido.token, data, horario, criadoIso_(io.agora()), ESTADO_ACTIVO]);
 
   return { ok: true, reservado: true, estado: existente ? "trocado" : "novo" };
 }
@@ -629,6 +662,10 @@ function doPost(e) {
 function preparar() {
   var reservas = folha_(ABA_RESERVAS, true);
   if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
+  // Texto simples nas duas colunas que o Sheets teria coagido a datas —
+  // é isto que tira o fuso da folha da equação (ver formatarTexto_).
+  formatarTexto_(reservas, COL_DATA);
+  formatarTexto_(reservas, COL_CRIADO);
 
   var caps = folha_(ABA_CAPACIDADES, true);
   if (caps.getLastRow() < 1) {
@@ -688,7 +725,9 @@ if (typeof module !== "undefined") {
     tokenExiste_: tokenExiste_,
     planoSemeadura_: planoSemeadura_,
     semear_: semear_,
+    criadoIso_: criadoIso_,
     reservar_: reservar_,
+    preparar: preparar,
     // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
     // testes de unidade. É exportada mesmo assim para pinar, com uma folha
     // e um SpreadsheetApp esboçados, a aritmética de índices e as chamadas
