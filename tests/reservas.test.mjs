@@ -219,3 +219,144 @@ test("planoReconciliacao_ trata cada slot em separado", () => {
   const subs = { "2026-09-08 | 08:45-09:30": 1 };
   assert.deepEqual(gs.planoReconciliacao_(reservas, subs, AGORA, JANELA), [1]);
 });
+
+function ioFalso(reservas, opcoes = {}) {
+  const estado = {
+    reservas: reservas.map(l => l.slice()),
+    acrescentadas: [],
+    expiradas: []
+  };
+  return {
+    estado,
+    io: {
+      lerReservas: () => estado.reservas,
+      lerCapacidades: () => opcoes.capacidades || [
+        ["horario", "vagas"],
+        ["08:00-08:45", 3],
+        ["08:45-09:30", 2]
+      ],
+      lerSubmissoes: () => (opcoes.submissoes === undefined ? null : opcoes.submissoes),
+      acrescentar: linha => {
+        estado.acrescentadas.push(linha);
+        estado.reservas.push(linha);
+      },
+      expirar: indices => {
+        estado.expiradas.push(...indices);
+        indices.forEach(i => { estado.reservas[i][4] = "expirado"; });
+      },
+      agora: () => opcoes.agora || AGORA
+    }
+  };
+}
+
+const PEDIDO = { token: "abcd-1234-efgh", data: "2026-09-08", horario: "08:45-09:30" };
+
+test("reservar_ toma um lugar livre", () => {
+  const { io, estado } = ioFalso([CAB]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "novo" });
+  assert.equal(estado.acrescentadas.length, 1);
+  assert.equal(estado.acrescentadas[0][0], PEDIDO.token);
+  assert.equal(estado.acrescentadas[0][4], "activo");
+});
+
+test("reservar_ é idempotente para o mesmo token e slot", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    [PEDIDO.token, "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"]
+  ]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "repetido" });
+  assert.equal(estado.acrescentadas.length, 0, "não deve consumir um segundo lugar");
+});
+
+test("reservar_ recusa quando o slot está cheio", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"],
+    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"]
+  ]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: false, motivo: "cheio", restantes: 0 });
+  assert.equal(estado.acrescentadas.length, 0);
+});
+
+test("reservar_ troca de slot sem perder o lugar antigo antes de garantir o novo", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "activo"]
+  ]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "trocado" });
+  assert.deepEqual(estado.expiradas, [1]);
+  assert.equal(estado.acrescentadas.length, 1);
+});
+
+test("reservar_ NÃO liberta o lugar antigo se o novo slot estiver cheio", () => {
+  const { io, estado } = ioFalso([
+    CAB,
+    [PEDIDO.token, "2026-09-08", "08:00-08:45", new Date(AGORA), "activo"],
+    ["x1", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"],
+    ["x2", "2026-09-08", "08:45-09:30", new Date(AGORA), "activo"]
+  ]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.equal(r.reservado, false);
+  assert.deepEqual(estado.expiradas, [], "o lugar já garantido tem de sobreviver");
+  assert.equal(estado.reservas[1][4], "activo");
+});
+
+test("reservar_ reconcilia antes de recusar, e o lugar órfão é reaproveitado", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes: [["Reserva"], ["2026-09-08 | 08:45-09:30"]] }
+  );
+  // Duas reservas antigas, mas só uma submissão: uma é órfã e liberta lugar.
+  const r = gs.reservar_(PEDIDO, io);
+  assert.equal(r.reservado, true);
+});
+
+test("reservar_ não reconcilia quando as submissões são ilegíveis", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes: [["Data", "Email"], ["2026-09-01", "a@b.pt"]] }
+  );
+  const r = gs.reservar_(PEDIDO, io);
+  assert.equal(r.reservado, false, "sem coluna Reserva não se liberta nada");
+  assert.deepEqual(estado.expiradas, []);
+});
+
+test("reservar_ não reconcilia quando a aba de submissões não existe", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso([
+    CAB,
+    ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+    ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+  ]);
+  const r = gs.reservar_(PEDIDO, io);
+  assert.equal(r.reservado, false);
+  assert.deepEqual(estado.expiradas, []);
+});
+
+test("reservar_ devolve erro de capacidades ilegíveis sem reservar", () => {
+  const { io, estado } = ioFalso([CAB], { capacidades: [["horario", "vagas"]] });
+  assert.deepEqual(gs.reservar_(PEDIDO, io), { ok: false, erro: "capacidades_ilegiveis" });
+  assert.equal(estado.acrescentadas.length, 0);
+});
+
+test("reservar_ propaga os erros de validação", () => {
+  const { io } = ioFalso([CAB]);
+  assert.deepEqual(
+    gs.reservar_({ ...PEDIDO, horario: "23:00-23:45" }, io),
+    { ok: false, erro: "horario_desconhecido" }
+  );
+});

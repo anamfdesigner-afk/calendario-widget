@@ -26,6 +26,10 @@ var ESTADO_EXPIRADO = "expirado";
 
 var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
 
+var JANELA_ORFAS_MS = 20 * 60 * 1000;
+var ESPERA_LOCK_MS = 20000;
+var ESPERA_LOCK_GET_MS = 5000;
+
 // ===============================
 // CAPACIDADES (funções puras)
 // ===============================
@@ -225,6 +229,223 @@ function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
 }
 
 // ===============================
+// NÚCLEO DA RESERVA
+// ===============================
+// A lógica toda está aqui, com a E/S injetada (io), para poder ser testada
+// em Node sem Apps Script. O doPost só junta o mutex e a folha real.
+//
+// A ordem dos passos importa: a capacidade é verificada ANTES de libertar
+// a escolha anterior do mesmo token. Ao contrário, um hóspede que trocasse
+// para um horário cheio perdia o lugar que já tinha e não ganhava nenhum.
+function reservar_(pedido, io) {
+  var caps = capacidades_(io.lerCapacidades());
+  if (!caps.length) return { ok: false, erro: "capacidades_ilegiveis" };
+
+  var hoje = normalizarData_(new Date(io.agora()));
+  var v = validarPedido_(pedido, caps, hoje);
+  if (!v.ok) return v;
+
+  var data = pedido.data;
+  var horario = pedido.horario;
+  var limite = capacidadeDe_(caps, horario);
+
+  var linhas = io.lerReservas();
+  var existente = linhaDoToken_(linhas, pedido.token);
+
+  if (existente && existente.data === data && existente.horario === horario) {
+    return { ok: true, reservado: true, estado: "repetido" };
+  }
+
+  var livre = activos_(linhas, data, horario) < limite;
+
+  if (!livre) {
+    // Só aqui vale a pena ler a Form responses: é a única situação em que
+    // reconciliar pode mudar a resposta. Mantém o caminho normal rápido.
+    var submissoes = io.lerSubmissoes();
+    if (submissoes && submissoes.length) {
+      var idx = colunaReserva_(submissoes);
+      // -1 = não sabemos ler a coluna. Reconciliar às cegas libertaria
+      // reservas reais e reabriria lugares. Preferimos recusar.
+      if (idx >= 0) {
+        var plano = planoReconciliacao_(
+          linhas, contarSubmissoes_(submissoes, idx), io.agora(), JANELA_ORFAS_MS
+        );
+        if (plano.length) {
+          io.expirar(plano);
+          linhas = io.lerReservas();
+          livre = activos_(linhas, data, horario) < limite;
+        }
+      }
+    }
+  }
+
+  if (!livre) return { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
+
+  if (existente) io.expirar([existente.indice]);
+  io.acrescentar([pedido.token, data, horario, new Date(io.agora()), ESTADO_ACTIVO]);
+
+  return { ok: true, reservado: true, estado: existente ? "trocado" : "novo" };
+}
+
+// ===============================
+// E/S REAL NA FOLHA
+// ===============================
+function folha_(nome, criarSeFaltar) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var aba = ss.getSheetByName(nome);
+  if (!aba && criarSeFaltar) aba = ss.insertSheet(nome);
+  return aba;
+}
+
+function lerTudo_(nome) {
+  var aba = folha_(nome, false);
+  if (!aba) return null;
+  var ultima = aba.getLastRow();
+  var colunas = aba.getLastColumn();
+  if (ultima < 1 || colunas < 1) return [];
+  return aba.getRange(1, 1, ultima, colunas).getValues();
+}
+
+function ioReal_() {
+  return {
+    lerReservas: function () { return lerTudo_(ABA_RESERVAS) || [CABECALHO_RESERVAS]; },
+    lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
+    lerSubmissoes: function () { return lerTudo_(ABA_SUBMISSOES); },
+    acrescentar: function (linha) { folha_(ABA_RESERVAS, true).appendRow(linha); },
+    expirar: function (indices) {
+      var aba = folha_(ABA_RESERVAS, true);
+      for (var i = 0; i < indices.length; i++) {
+        // +1 porque as linhas da folha são 1-based e o índice inclui o cabeçalho.
+        aba.getRange(indices[i] + 1, COL_ESTADO + 1).setValue(ESTADO_EXPIRADO);
+      }
+      SpreadsheetApp.flush();
+    },
+    agora: function () { return Date.now(); }
+  };
+}
+
+function resposta_(obj) {
+  return ContentService
+    .createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ===============================
+// GET: vagas de uma data
+// ===============================
+// É também aqui que a reconciliação corre em regime best-effort. Sem isto,
+// um slot cujos lugares fossem TODOS órfãos apareceria como "Sem vagas",
+// ninguém chegaria a submeter contra ele, e a reconciliação do POST nunca
+// correria: as órfãs ficavam presas para sempre.
+function doGet(e) {
+  var data = String(((e && e.parameter) || {}).data || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+    return resposta_({ ok: false, erro: "data_invalida" });
+  }
+
+  var io = ioReal_();
+  var caps = capacidades_(io.lerCapacidades());
+  if (!caps.length) return resposta_({ ok: false, erro: "capacidades_ilegiveis" });
+
+  var lock = LockService.getScriptLock();
+  if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
+    try {
+      var submissoes = io.lerSubmissoes();
+      if (submissoes && submissoes.length) {
+        var idx = colunaReserva_(submissoes);
+        if (idx >= 0) {
+          var plano = planoReconciliacao_(
+            io.lerReservas(), contarSubmissoes_(submissoes, idx),
+            io.agora(), JANELA_ORFAS_MS
+          );
+          if (plano.length) io.expirar(plano);
+        }
+      }
+    } catch (err) {
+      // Reconciliar é oportunista: falhar aqui não deve impedir o GET.
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  var linhas = io.lerReservas();
+  var slots = [];
+  for (var i = 0; i < caps.length; i++) {
+    var usadas = activos_(linhas, data, caps[i].horario);
+    slots.push({
+      horario: caps[i].horario,
+      capacidade: caps[i].vagas,
+      restantes: Math.max(0, caps[i].vagas - usadas)
+    });
+  }
+  return resposta_({ ok: true, data: data, slots: slots });
+}
+
+// ===============================
+// POST: reservar um lugar
+// ===============================
+function doPost(e) {
+  var pedido;
+  try {
+    pedido = JSON.parse((e && e.postData && e.postData.contents) || "{}");
+  } catch (err) {
+    return resposta_({ ok: false, erro: "corpo_invalido" });
+  }
+  if (pedido.acao !== "reservar") return resposta_({ ok: false, erro: "acao_desconhecida" });
+
+  var lock = LockService.getScriptLock();
+  // É este mutex que torna impossível duas submissões simultâneas
+  // intercalarem-se e ficarem as duas com o último lugar.
+  if (!lock.tryLock(ESPERA_LOCK_MS)) {
+    return resposta_({ ok: false, erro: "lock_indisponivel" });
+  }
+  try {
+    return resposta_(reservar_(pedido, ioReal_()));
+  } catch (err) {
+    return resposta_({ ok: false, erro: "erro_interno" });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ===============================
+// INSTALAÇÃO E LIMPEZA
+// ===============================
+// Corre UMA vez a partir do editor. Cria as abas e semeia as capacidades
+// atuais. É preferível a pedir ao dono para criar abas à mão.
+function preparar() {
+  var reservas = folha_(ABA_RESERVAS, true);
+  if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
+
+  var caps = folha_(ABA_CAPACIDADES, true);
+  if (caps.getLastRow() < 1) {
+    caps.appendRow(CABECALHO_CAPACIDADES);
+    caps.appendRow(["08:00-08:45", 3]);
+    caps.appendRow(["08:45-09:30", 2]);
+    caps.appendRow(["09:30-10:15", 3]);
+    caps.appendRow(["10:15-11:00", 2]);
+  }
+  return "Abas prontas.";
+}
+
+// Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
+// de escrever à mão na folha: um clique mal dado já apagou o email de um
+// hóspede real.
+function limparTestes() {
+  var aba = folha_(ABA_RESERVAS, false);
+  if (!aba) return "Aba Reservas não existe.";
+  var linhas = lerTudo_(ABA_RESERVAS) || [];
+  var apagadas = 0;
+  for (var i = linhas.length - 1; i >= 1; i--) {
+    if (String((linhas[i] || [])[COL_TOKEN]).indexOf("conc-teste-") === 0) {
+      aba.deleteRow(i + 1);
+      apagadas++;
+    }
+  }
+  return "Linhas de teste apagadas: " + apagadas;
+}
+
+// ===============================
 // EXPORTAÇÃO PARA OS TESTES
 // ===============================
 // No Apps Script "module" não existe, logo este bloco é ignorado. Em Node
@@ -240,6 +461,7 @@ if (typeof module !== "undefined") {
     validarPedido_: validarPedido_,
     colunaReserva_: colunaReserva_,
     contarSubmissoes_: contarSubmissoes_,
-    planoReconciliacao_: planoReconciliacao_
+    planoReconciliacao_: planoReconciliacao_,
+    reservar_: reservar_
   };
 }
