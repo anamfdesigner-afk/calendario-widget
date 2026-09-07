@@ -114,9 +114,12 @@ vai existir, **não há forma automática de recuperar as reservas futuras já f
 existirem reservas para hoje ou depois no momento da instalação, os seus lugares aparecem
 livres e podem ser vendidos outra vez.
 
-Enquanto o número for pequeno, a solução é o dono acrescentar essas reservas à mão à aba
-`Reservas` uma única vez, no momento da mudança. Isto é uma excepção pontual à regra de não
-escrever naquela aba, e tem de estar no guia com o formato exacto das colunas.
+**Resolvido na prática:** o dono confirmou em 2026-09-07 que **não existem reservas** e que o
+formulário ainda não está em serviço, logo não há nada a recuperar. O procedimento manual que
+esta secção previa foi **retirado do guia de propósito**: mandava o dono escrever à mão numa
+aba gerida pelo script, o que é uma armadilha sem nada a ganhar. Não o volte a acrescentar sem
+uma razão nova — e, se alguma vez for preciso, as linhas têm de entrar como `confirmado` e não
+como `activo`, senão o primeiro webhook arma a reconciliação e liberta-as todas de uma vez.
 
 ## 6. Falhar fechado, na direcção certa
 
