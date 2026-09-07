@@ -23,7 +23,13 @@ dona da folha de cálculo das respostas.
 ## 3. Definir o fuso horário
 
 1. À esquerda, clique na roda dentada (**Definições do projeto**).
-2. Em **Fuso horário**, escolha **(GMT+00:00) Lisbon**.
+2. Em **Fuso horário**, procure a entrada **Lisboa** (ou **Lisbon** se a conta
+   estiver em inglês). Ela aparece como **Lisboa (Europe/Lisbon)** ou
+   **Lisbon (Europe/Lisbon)**. O número de horas ao lado muda com as estações
+   — pode aparecer `GMT+01:00` (verão) ou `GMT+00:00` (inverno) — ambas são
+   corretas desde que seja a cidade Lisboa/Lisbon.
+3. Não escolha **London** mesmo que mostre o mesmo número de horas — tem de
+   ser Lisboa.
 
 Isto é importante: sem o fuso certo, as reservas de madrugada ficam no dia
 errado.
@@ -88,6 +94,18 @@ mantém-se.
 
 ## Aviso
 
-Não escreva à mão na aba **Reservas**. É o programa que a mantém. Se
-precisar de apagar as linhas de teste, execute a função **limparTestes**
-como no ponto 4.
+Não edite a aba **Reservas**. É o programa que a mantém. Há uma única
+exceção: se um hóspede cancelar a reserva por telefone, ou se a sua própria
+reserva de teste precisar ser cancelada, pode mudar a coluna `estado` dessa
+linha de `activo` para `expirado`. Isto liberta o lugar. A linha fica
+registada como prova.
+
+Não faça nada mais: não acrescente linhas, não apague linhas, e não mude
+`token`, `data`, `horario` ou `criado`.
+
+**Sobre `limparTestes`:** Se correr a função `limparTestes` (como no ponto 4),
+ela apaga apenas as linhas deixadas pelo teste de carga do programador — as
+que têm `token` a começar por `conc-teste-`. Se tiver feito uma reserva real
+através do formulário para testar se funciona, essa reserva tem um `token`
+normal e `limparTestes` não a apaga. Use a solução acima: mude o `estado`
+para `expirado`.
