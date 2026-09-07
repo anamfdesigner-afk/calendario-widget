@@ -1172,7 +1172,8 @@ function ioReal_() {
         // alguém pode ter escrito ali à mão, e uma correcção do dono nunca
         // pode ser apagada por nós.
         var destino = aba.getRange(p.linha, p.coluna);
-        if (String(destino.getValue() == null ? "" : destino.getValue()).trim()) continue;
+        var jaLa = destino.getValue();
+        if (String(jaLa == null ? "" : jaLa).trim()) continue;
 
         // Célula a célula, com as coordenadas que o planoRespostas_ já
         // calculou. Nunca insertRow, deleteRow, insertColumn nem um setValues
@@ -1292,12 +1293,19 @@ function doGet(e) {
   // webhook. Preso ao caminho do slot cheio, a esmagadora maioria das reservas
   // nunca chegava a aparecer ao lado do menu — que é a razão de existir disto.
   //
-  // Custa uma leitura da aba das respostas, e só quando já há alguma reserva
-  // com submissão guardada (ver temSubmissaoGuardada_). NÃO pega no lock: a
-  // escrita é sempre o mesmo valor na mesma célula, numa coluna que mais
-  // ninguém escreve, logo dois GET em simultâneo não se estorvam. Pegar no
-  // lock a cada GET era roubá-lo ao caminho da reserva, que só o espera 3,5 s
-  // e falha fechado quando não o consegue.
+  // E não é de graça, para ninguém se enganar a contar: a partir da primeira
+  // reserva com submissão guardada — ou seja, para sempre — cada GET faz mais
+  // um getValues() INTEIRO da aba das respostas (23 colunas × todas as linhas,
+  // que só crescem), e o <input type="date"> dispara uns três GET por data
+  // escrita à mão. É latência no caminho do hóspede. O que a torna suportável
+  // é o temSubmissaoGuardada_ (numa instalação sem reservas não custa nada) e
+  // é ela o primeiro sítio a olhar se um dia o GET ficar lento.
+  //
+  // NÃO pega no lock: a escrita é sempre o mesmo valor na mesma célula, numa
+  // coluna que mais ninguém escreve, logo dois GET em simultâneo não se
+  // estorvam — e o escreverRespostas reconfirma a linha antes de lhe tocar.
+  // Pegar no lock a cada GET era roubá-lo ao caminho da reserva, que só o
+  // espera 3,5 s e falha fechado quando não o consegue.
   try {
     espelharRespostas_(io, linhas);
   } catch (errEspelho) {
