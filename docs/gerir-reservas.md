@@ -16,7 +16,7 @@ Abra a aba **Reservas**. Cada linha é um lugar ao pequeno-almoço:
 | `quarto` | o número do quarto |
 | `nome` | o nome do hóspede |
 | `estado` | ver em baixo |
-| `token`, `criado` | uso interno do programa — ignore |
+| `token`, `criado`, `submissao` | uso interno do programa — ignore |
 
 Para a lista da manhã, ordene ou filtre pela coluna **`data`**.
 
@@ -29,6 +29,21 @@ Para a lista da manhã, ordene ou filtre pela coluna **`data`**.
 
 Se uma linha ficar em **`activo` durante horas**, avise-me: quer dizer que a confirmação
 automática deixou de chegar. Não é grave e não vende lugares a mais — mas convém ver porquê.
+
+### A reserva também aparece na aba das respostas
+
+Na aba **Form responses** — a que a JotForm enche com as respostas do
+formulário — a reserva aparece na coluna **`typeA137`**, ao lado das escolhas
+de menu do hóspede, no formato `2026-09-08 | 08:45-09:30`.
+
+Essa coluna é preenchida **pelo programa**, sozinha. Não escreva lá à mão: o
+programa só preenche células vazias, por isso o que escrever fica e a reserva
+verdadeira nunca chega a aparecer nessa linha.
+
+O valor pode demorar um pouco a aparecer — a reserva e a linha da resposta
+chegam à folha por caminhos diferentes, e o programa junta-as da próxima vez
+que alguém abrir o formulário. Se uma linha ficar sem reserva durante muito
+tempo, avise-me.
 
 ---
 
@@ -73,8 +88,16 @@ publicar nem avisar ninguém.
 Na aba **Reservas**:
 
 - ❌ não acrescente nem apague linhas
-- ❌ não altere `token`, `data`, `horario` nem `criado`
+- ❌ não altere `token`, `data`, `horario`, `criado` nem `submissao`
 - ✅ só a coluna `estado`, como no ponto 2
+
+Na aba **Form responses**:
+
+- ❌ não escreva na coluna `typeA137` — é o programa que a preenche
+- ❌ não lhe mude o título, nem o do `Submission ID`
+
+O programa procura estas duas colunas pelo título. Se algum mudar, a reserva
+deixa de aparecer nessa aba (as reservas e os lugares continuam bem).
 
 Nas duas abas:
 
@@ -93,4 +116,6 @@ O programa procura as abas e as colunas por estes nomes. Se mudarem, deixa de fu
   **Capacidades**. Tem de ser exactamente `08:00-08:45`.
 - **As colunas `quarto` e `nome` ficam vazias** — as reservas continuam boas; é só a
   identificação que não está a chegar. Avise-me.
+- **A coluna `typeA137` da aba das respostas fica vazia** — as reservas continuam boas
+  e estão todas na aba **Reservas**; é só a cópia que não está a chegar. Avise-me.
 - **Qualquer outra coisa** — não tente corrigir à mão na folha. Diga-me o que vê.

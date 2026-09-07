@@ -57,10 +57,12 @@ sejam o mesmo.
 5. Volte à folha de cálculo. Deve ver duas abas novas em baixo:
    **Reservas** e **Capacidades**.
 
-A aba **Reservas** tem sete colunas: `token`, `data`, `horario`, `criado`,
-`estado`, `quarto` e `nome`. As duas últimas são preenchidas sozinhas quando
-a reserva se concretiza — é aí que fica escrito **quem** tem cada horário, e
-é essa a lista que a cozinha lê de manhã.
+A aba **Reservas** tem oito colunas: `token`, `data`, `horario`, `criado`,
+`estado`, `quarto`, `nome` e `submissao`. O `quarto` e o `nome` são
+preenchidos sozinhos quando a reserva se concretiza — é aí que fica escrito
+**quem** tem cada horário, e é essa a lista que a cozinha lê de manhã. A
+`submissao` é uso interno: é o número que liga cada reserva à linha
+correspondente na aba das respostas do formulário.
 
 ### Confira a mensagem
 
@@ -68,16 +70,25 @@ Em baixo, no editor, abre-se o painel **Registo de execução**. Lá aparece
 uma linha assim:
 
 ```
-Abas prontas. Segredo do webhook: EM FALTA. Formulário esperado: EM FALTA. Último webhook recebido: NUNCA (enquanto for NUNCA, nenhum lugar é libertado).
+Abas prontas. Segredo do webhook: EM FALTA. Formulário esperado: EM FALTA. Último webhook recebido: NUNCA (enquanto for NUNCA, nenhum lugar é libertado). Coluna do ID: EM FALTA. Coluna da reserva: EM FALTA (enquanto houver EM FALTA, a reserva não aparece na aba "Form responses"; as reservas e os lugares não são afectados).
 ```
 
-**Os dois `EM FALTA` e o `NUNCA` são o esperado nesta altura**: a senha e o
+**Os `EM FALTA` e o `NUNCA` são o esperado nesta altura**: a senha e o
 número do formulário só são guardados no ponto 8, e o aviso do formulário só é
 ligado aí. Nada disto é erro.
 
+A mensagem termina a dizer quais são as **duas colunas da aba das respostas**
+que o programa usa para escrever a reserva ao lado das escolhas de menu do
+hóspede — a do número da submissão e a da própria reserva. Enquanto alguma
+disser `EM FALTA`, essa escrita fica desligada: **a reserva não aparece na aba
+das respostas**. As reservas e os lugares não são afectados — o formulário
+continua a funcionar na mesma e a aba **Reservas** continua completa.
+
 Depois do ponto 8, correr o `preparar` outra vez deve mostrar
-`Segredo do webhook: definido`, o número do formulário, e uma data em vez de
-`NUNCA` — e é assim que se confirma que o aviso funciona.
+`Segredo do webhook: definido`, o número do formulário, uma data em vez de
+`NUNCA`, e as duas colunas com nome (algo como `Coluna do ID: "Submission ID".
+Coluna da reserva: "typeA137".`) — e é assim que se confirma que tudo ficou
+ligado.
 
 ## 6. Conferir as capacidades
 
@@ -282,7 +293,8 @@ Nada mais: não mude `token`, `data`, `horario` nem `criado`.
 As colunas `quarto` e `nome` são escritas pelo programa quando a reserva se
 concretiza. Pode lê-las à vontade — é para isso que existem — e corrigir um
 nome mal escrito não faz mal nenhum: o programa não as lê para contar
-lugares.
+lugares. A `submissao` é diferente: não a altere, é ela que liga a reserva à
+linha da aba das respostas.
 
 **Sobre o `preparar`:** pode voltar a correr sempre que quiser. Não estraga
 nada, não duplica reservas, e depois do ponto 8 serve para confirmar, na
