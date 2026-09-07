@@ -961,8 +961,17 @@ function doPost(e) {
     // `k` ficava dez segundos na fila do mutex, e alguns por segundo bastavam
     // para as reservas verdadeiras (3,5 s de espera) receberem
     // lock_indisponivel e o formulário deixar de aceitar reservas.
+    // A RESPOSTA AO WEBHOOK NÃO DIZ O QUE FALHOU — é sempre o mesmo {ok:false},
+    // como a emenda especifica. Distinguir `segredo_invalido` de
+    // `formulario_inesperado` dizia a quem estivesse a adivinhar o segredo o
+    // instante exacto em que acertou, e nada aqui o limita em tentativas; o
+    // `webhook_nao_configurado` anunciava até que não há segredo definido. O
+    // detalhe fica no console.log, onde o dono o lê e um estranho não.
+    //
+    // Os códigos do ramo do widget ficam como estão: o widget precisa deles
+    // para dizer ao hóspede o que aconteceu.
     var portao = portaoWebhook_(params, ioWebhook);
-    if (!portao.ok) return resposta_(portao);
+    if (!portao.ok) return resposta_({ ok: false });
 
     var lockWebhook = LockService.getScriptLock();
     // A confirmação corre no MESMO mutex da reserva: lê a folha, escolhe uma
@@ -970,13 +979,14 @@ function doPost(e) {
     // decorrer já tinha expirado.
     if (!lockWebhook.tryLock(ESPERA_LOCK_WEBHOOK_MS)) {
       console.log("Webhook não conseguiu o lock: nada confirmado.");
-      return resposta_({ ok: false, erro: "lock_indisponivel" });
+      return resposta_({ ok: false });
     }
     try {
-      return resposta_(confirmarWebhook_(params, ioWebhook));
+      var r = confirmarWebhook_(params, ioWebhook);
+      return resposta_(r.ok ? r : { ok: false });
     } catch (err) {
       console.log("Webhook falhou: " + err);
-      return resposta_({ ok: false, erro: "erro_interno" });
+      return resposta_({ ok: false });
     } finally {
       lockWebhook.releaseLock();
     }

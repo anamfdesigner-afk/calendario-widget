@@ -1722,7 +1722,9 @@ test("doPost recusa um webhook com o segredo errado sem tocar na folha", () => {
     r = corpo(gsComStub.doPost({ parameter: webhook({ k: "errado" }) }));
   });
 
-  assert.deepEqual(r, { ok: false, erro: "segredo_invalido" });
+  // A resposta não diz O QUE falhou: dizê-lo era anunciar a quem estivesse a
+  // adivinhar o segredo o instante em que acertou.
+  assert.deepEqual(r, { ok: false });
   assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
   assert.equal(livro.propriedades.ultimoWebhook, undefined, "não arma a reconciliação");
   // E sobretudo: NÃO pega no lock. Antes pegava, e um POST anónimo com
@@ -1770,7 +1772,37 @@ test("as propriedades do webhook não são lidas duas vezes por engano", () => {
   assert.equal(livro.folhas["Reservas"].dados[1][4], "confirmado");
 });
 
-test("doPost devolve lock_indisponivel ao webhook em vez de confirmar às cegas", () => {
+test("a recusa do webhook é sempre igual, seja o que for que falhou", () => {
+  // Distinguir `segredo_invalido` de `formulario_inesperado` dizia a quem
+  // estivesse a adivinhar o segredo o instante exacto em que acertou — e nada
+  // aqui o limita em tentativas. O `webhook_nao_configurado` anunciava até que
+  // não há segredo nenhum definido.
+  const semReserva = JSON.stringify({ q3_nome: "Ana" });
+  const casos = [
+    ["segredo errado", { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID }, webhook({ k: "errado" })],
+    ["formulário errado", { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID }, webhook({ formID: "999" })],
+    ["sem segredo definido", { formIdEsperado: FORM_ID }, webhook()],
+    ["sem formulário definido", { segredoWebhook: SEGREDO }, webhook()],
+    ["reserva ilegível", { segredoWebhook: SEGREDO, formIdEsperado: FORM_ID },
+      webhook({ rawRequest: semReserva })]
+  ];
+
+  const respostas = casos.map(([, propriedades, params]) => {
+    const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA }, { propriedades });
+    const gsComStub = carregarCom(livro.stubs);
+    let r;
+    const registo = comRegisto(() => { r = corpo(gsComStub.doPost({ parameter: params })); });
+    // E o detalhe fica no registo, onde o dono o lê e um estranho não.
+    assert.match(registo, /Webhook recusado|não encontrei/);
+    return r;
+  });
+
+  respostas.forEach((r, i) => {
+    assert.deepEqual(r, { ok: false }, casos[i][0] + " não pode dizer o que falhou");
+  });
+});
+
+test("doPost recusa o webhook sem confirmar às cegas quando não tem o lock", () => {
   const livro = livroFalso({
     Reservas: [
       CAB,
@@ -1786,9 +1818,10 @@ test("doPost devolve lock_indisponivel ao webhook em vez de confirmar às cegas"
   let r;
   const registo = comRegisto(() => { r = corpo(gsComStub.doPost({ parameter: webhook() })); });
 
-  assert.deepEqual(r, { ok: false, erro: "lock_indisponivel" });
+  assert.deepEqual(r, { ok: false });
   assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
   assert.equal(livro.chamadas.releaseLock, 0);
+  // O motivo fica no registo, que é onde o dono o lê.
   assert.match(registo, /não conseguiu o lock/);
 });
 
@@ -1805,7 +1838,7 @@ test("doPost larga o lock quando a confirmação estoura", () => {
   let r;
   const registo = comRegisto(() => { r = corpo(gsComStub.doPost({ parameter: webhook() })); });
 
-  assert.deepEqual(r, { ok: false, erro: "erro_interno" });
+  assert.deepEqual(r, { ok: false });
   assert.equal(livro.chamadas.releaseLock, 1);
   assert.match(registo, /Webhook falhou/);
 });

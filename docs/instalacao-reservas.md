@@ -175,16 +175,25 @@ mesmo vendidos, e o mesmo pequeno-almoço era vendido duas vezes, em silêncio.
 São duas metades — uma senha guardada no programa, e o aviso criado no
 formulário — e têm de levar a **mesma** senha. Faça-as por esta ordem.
 
-### 8.1 Escolher uma senha
+### 8.1 A senha
 
-Invente uma senha só com letras, números e hífenes, sem espaços e sem
-acentos. Por exemplo: `pao-de-lo-com-mel-2026`. Guarde-a; não precisa de
-ma enviar.
+Esta senha não é para decorar — vai ser colada duas vezes e nunca mais
+escrita. Por isso não a invente: use uma **comprida e ao calhas**, com pelo
+menos 32 caracteres, só letras, números e hífenes, sem espaços e sem acentos.
+
+Cole isto, ou algo com este aspeto:
+
+```
+7xQ4-vK9m-Ld2T-pR8w-Zc5N-hJ3b-Ya6E-Qs1U
+```
+
+Guarde-a onde guarda as suas senhas; não precisa de ma enviar.
 
 Serve para o programa saber que o aviso vem mesmo do seu formulário. O
 endereço do programa fica escrito num sítio público (é o formulário que
 precisa dele), e sem senha qualquer pessoa que o encontrasse podia mandar
-avisos falsos.
+avisos falsos. Uma senha curta ou com palavras pode ser adivinhada por
+tentativas, e ninguém está a contar as tentativas de quem tenta.
 
 ### 8.2 Guardar a senha no programa
 
@@ -213,7 +222,7 @@ maiúsculas nos mesmos sítios. O segundo valor é o número do seu formulário 
    senha, tudo junto e sem espaços:
 
 ```
-https://script.google.com/macros/s/AKfy...../exec?k=pao-de-lo-com-mel-2026
+https://script.google.com/macros/s/AKfy...../exec?k=7xQ4-vK9m-Ld2T-pR8w-Zc5N-hJ3b-Ya6E-Qs1U
 ```
 
 5. **Complete Integration** (Completar integração).
