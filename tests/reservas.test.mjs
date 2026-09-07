@@ -551,6 +551,36 @@ test("as linhas históricas em branco continuam a permitir reconciliar órfãs",
   assert.deepEqual(estado.expiradas, [1]);
 });
 
+test("reconciliar_ diz no registo porque é que recusou", () => {
+  // A recusa é deliberada (libertar a menos é a direção deste desenho); o
+  // silêncio não era. Uma linha sem reserva legível depois da marca — uma
+  // nota escrita à mão na Form responses, uma linha de outro formulário —
+  // trava a reconciliação durante toda a vida da implantação, e quem
+  // investigasse "por que é que as órfãs nunca são libertadas?" não tinha
+  // nada onde olhar.
+  const semAba = ioFalso([CAB]);
+  assert.match(
+    comRegisto(() => gs.reconciliar_(semAba.io, -1)),
+    /não corre: não há aba das respostas/
+  );
+
+  const semColuna = ioFalso([CAB], {
+    submissoes: [["Data", "Email"], ["2026-09-01", "a@b.pt"]]
+  });
+  assert.match(
+    comRegisto(() => gs.reconciliar_(semColuna.io, -1)),
+    /não corre: não encontrei nenhuma coluna/
+  );
+
+  const espelhoPartido = ioFalso([CAB], {
+    submissoes: SUBS_ESPELHO_PARTIDO, marca: 1
+  });
+  const registo = comRegisto(() => gs.reconciliar_(espelhoPartido.io, -1));
+  assert.match(registo, /marca de água/);
+  assert.match(registo, /linhas a partir da 1/, "diz qual a marca em vigor");
+  assert.match(registo, /coluna 3/, "e em que coluna procurou");
+});
+
 test("semear_ grava a marca de água uma linha à frente da última reserva legível", () => {
   const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
   gs.semear_(io);
@@ -769,6 +799,31 @@ test("semear_ não ressuscita uma linha semeada que o dono cancelou à mão", ()
   assert.equal(gs.semear_(io).semeadas, 0);
 });
 
+test("semear_ não ressuscita uma reserva do widget cancelada à mão", () => {
+  // O guia autoriza cancelar uma reserva mudando `estado` para `expirado`
+  // (cancelamento por telefone). A linha de submissão daquele hóspede FICA na
+  // folha para sempre, e decidir a semeadura só pelas linhas ACTIVAS lia
+  // aquele slot como "falta uma": a semeadura seguinte criava uma linha
+  // sub-<indice> nova e bloqueava outra vez o lugar que o dono libertou.
+  //
+  // Pior: por a submissão continuar a contar em contarSubmissoes_, o
+  // excedente daquele slot dá 0 e a reconciliação NUNCA pode libertar essa
+  // linha nova — o lugar ficava bloqueado para sempre.
+  const submissoes = [
+    ["Submission Date", "Reserva"],
+    ["2026-09-01", "2026-09-09 | 08:00-08:45"]
+  ];
+  const { io, estado } = ioFalso([CAB], { submissoes });
+
+  gs.reservar_({ ...PEDIDO_09, token: "real-uuid-1234" }, io);
+  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 1);
+
+  estado.reservas[1][4] = "expirado";
+
+  assert.equal(gs.semear_(io).semeadas, 0, "o lugar libertado não pode ser bloqueado outra vez");
+  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 0);
+});
+
 test("planoSemeadura_ ignora submissões de datas passadas", () => {
   const submissoes = [
     ["Reserva"],
@@ -904,6 +959,20 @@ function carregarCom(stubs) {
   return carregarGs(CAMINHO_GS, stubs);
 }
 
+// Apanha o que o script escreve no registo de execução. O console é global
+// (não entra pelos stubs do carregarGs), por isso troca-se e repõe-se.
+function comRegisto(fn) {
+  const linhas = [];
+  const original = console.log;
+  console.log = (...args) => { linhas.push(args.map(String).join(" ")); };
+  try {
+    fn();
+  } finally {
+    console.log = original;
+  }
+  return linhas.join("\n");
+}
+
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 // ===============================
@@ -951,6 +1020,32 @@ test("preparar() põe as colunas data e criado em texto simples", () => {
     { aba: "Reservas", coluna: 2, formato: "@" },
     { aba: "Reservas", coluna: 4, formato: "@" }
   ]);
+});
+
+test("preparar() não reformata uma aba Reservas que já tem reservas", () => {
+  // Uma versão anterior deste script deixava o appendRow coagir as strings em
+  // células de DATA. Pôr essa coluna a texto simples não desfaz a coerção: a
+  // célula pode passar a devolver o número de série do Sheets, o
+  // normalizarData_ dá "46000", e todas as reservas guardadas ficam
+  // invisíveis para o activos_ — os lugares delas seriam vendidos outra vez,
+  // por causa de um segundo preparar().
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:00-08:45", "2026-09-08T11:00:00.000Z", "activo"]
+    ],
+    "Form responses": [["Submission Date", "Reserva"]]
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  gsComStub.preparar();
+
+  assert.deepEqual(
+    livro.formatos.filter(f => f.aba === "Reservas"),
+    [],
+    "uma aba com dados não pode ser reformatada"
+  );
+  assert.equal(livro.folhas["Reservas"].dados.length, 2, "e nada lhe é acrescentado");
 });
 
 test("preparar() cria as abas e semeia as capacidades", () => {
@@ -1019,6 +1114,65 @@ test("escolherAbaSubmissoes_ devolve null quando não há nada reconhecível", (
   assert.equal(gs.escolherAbaSubmissoes_(["Folha1"], lerDe({ Folha1: [["a"], ["b"]] })), null);
   assert.equal(gs.escolherAbaSubmissoes_([], lerDe({})), null);
   assert.equal(gs.escolherAbaSubmissoes_(null, lerDe({})), null);
+});
+
+// Com DOIS nomes plausíveis o nome já não decide — decide o conteúdo. O caso
+// confirmado é uma aba de backup: pela ordem das abas era ela a escolhida, a
+// marca de água ficava registada sobre uma aba morta onde nunca aparece linha
+// nova, o submissoesFiaveis_ passava para sempre, e então toda a reserva
+// genuína futura parecia órfã e era libertada e revendida.
+
+const BACKUP_MORTO = [
+  ["Submission Date", "Reserva"],
+  ["2025-01-01", "2025-01-02 | 08:00-08:45"]
+];
+
+const RESPOSTAS_VIVAS = [
+  ["Submission Date", "Reserva"],
+  ["2026-09-01", "2026-09-09 | 08:00-08:45"],
+  ["2026-09-02", "2026-09-09 | 08:45-09:30"]
+];
+
+test("forcaReservas_ mede quantas reservas legíveis a aba tem", () => {
+  assert.equal(gs.forcaReservas_(RESPOSTAS_VIVAS), 2);
+  assert.equal(gs.forcaReservas_(BACKUP_MORTO), 1);
+  assert.equal(gs.forcaReservas_([["Submission Date", "Reserva"]]), 0);
+  assert.equal(gs.forcaReservas_([]), 0);
+});
+
+test("escolherAbaSubmissoes_ entre nomes plausíveis escolhe a que tem mais reservas", () => {
+  const nomes = [
+    "Reservas", "Capacidades", "Form responses (backup 2025)", "Form responses 1"
+  ];
+  const mapa = {
+    "Form responses (backup 2025)": BACKUP_MORTO,
+    "Form responses 1": RESPOSTAS_VIVAS
+  };
+  const registo = comRegisto(() => {
+    assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe(mapa)), "Form responses 1");
+  });
+  // E os candidatos ficam no registo de execução: uma escolha errada tem de
+  // ser visível a quem investigue, não uma dedução.
+  assert.match(registo, /Form responses \(backup 2025\).*legíveis: 1/);
+  assert.match(registo, /Form responses 1.*legíveis: 2/);
+  assert.match(registo, /escolhida: Form responses 1/);
+});
+
+test("escolherAbaSubmissoes_ mantém o nome exato à frente do conteúdo", () => {
+  // O passo 1 protege o caso comum: a aba com o nome literal ganha mesmo
+  // vazia (a integração do JotForm pode ainda não estar mapeada).
+  const nomes = ["Reservas", "Form responses (backup 2025)", "Form responses"];
+  const mapa = { "Form responses (backup 2025)": RESPOSTAS_VIVAS };
+  assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe(mapa)), "Form responses");
+});
+
+test("escolherAbaSubmissoes_ com nomes plausíveis todos vazios fica no primeiro", () => {
+  // Nenhuma tem reservas legíveis (folha nova, espelho ainda não mapeado):
+  // não há conteúdo para desempatar, e a ordem das abas decide como antes.
+  const nomes = ["Reservas", "Form responses 1", "Respostas do formulário"];
+  comRegisto(() => {
+    assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe({})), "Form responses 1");
+  });
 });
 
 test("ioReal_.lerSubmissoes lê uma aba de respostas renomeada", () => {
@@ -1115,6 +1269,33 @@ test("doGet reconcilia quando um slot parece cheio, e liberta o lugar órfão", 
   assert.equal(livro.folhas["Reservas"].dados[1][4], "expirado");
   // E as contagens devolvidas já refletem a libertação, no mesmo pedido.
   assert.equal(r.slots[1].restantes, 1);
+});
+
+test("doGet registra a falha da reconciliação e ainda devolve as contagens", () => {
+  const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo"],
+      ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo"]
+    ],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": LINHAS_COM_RESERVA
+  }, { abaExplosiva: "Form responses" });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let r;
+  const registo = comRegisto(() => {
+    r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+  });
+
+  // Reconciliar é oportunista e a falha não pode travar o GET — mas engolir
+  // o erro em silêncio escondia uma reconciliação que nunca funciona atrás
+  // de um GET aparentemente perfeito.
+  assert.equal(r.ok, true);
+  assert.equal(r.slots[1].restantes, 0);
+  assert.match(registo, /Reconciliação no GET falhou/);
+  assert.equal(livro.chamadas.releaseLock, 1, "o lock tem de sair mesmo assim");
 });
 
 test("doGet rejeita uma data inválida sem tocar na folha", () => {

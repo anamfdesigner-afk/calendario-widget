@@ -275,6 +275,19 @@ function colunaReserva_(linhas) {
   return melhorContagem > 0 ? melhor : -1;
 }
 
+// Quantos valores no formato de reserva tem a melhor coluna desta aba. É a
+// medida de "esta aba parece a das respostas a valer", usada para desempatar
+// entre abas com nomes igualmente plausíveis (ver escolherAbaSubmissoes_).
+function forcaReservas_(linhas) {
+  var idx = colunaReserva_(linhas);
+  if (idx < 0) return 0;
+  var n = 0;
+  for (var i = 1; i < (linhas || []).length; i++) {
+    if (FORMATO_RESERVA_COMPLETO.test(normalizarReserva_((linhas[i] || [])[idx]))) n++;
+  }
+  return n;
+}
+
 function contarSubmissoes_(linhas, idxColuna) {
   var mapa = {};
   if (idxColuna < 0) return mapa;
@@ -383,15 +396,36 @@ function marcaDe_(io) {
 // perdia a reserva que já tinha confirmada, contra o invariante que o
 // reservar_ documenta: a capacidade é verificada ANTES de libertar a
 // escolha anterior.
+// As três recusas abaixo vão para o registo de execução. A recusa em si é
+// deliberada — libertar a menos é a direção escolhida em todo este desenho —
+// mas o SILÊNCIO não era: uma única linha sem reserva legível depois da marca
+// (uma nota que o dono escreveu na Form responses, uma linha vinda de outro
+// formulário) trava a reconciliação durante toda a vida da implantação, e
+// quem fosse investigar "por que é que as órfãs nunca são libertadas?" não
+// tinha absolutamente nada onde olhar.
 function reconciliar_(io, excluirIndice) {
   var submissoes = io.lerSubmissoes();
-  if (!submissoes || !submissoes.length) return 0;
+  if (!submissoes || !submissoes.length) {
+    console.log("Reconciliação não corre: não há aba das respostas legível.");
+    return 0;
+  }
 
   var idx = colunaReserva_(submissoes);
   // -1 = não sabemos ler a coluna. Reconciliar às cegas libertaria reservas
   // reais e reabriria lugares. Preferimos recusar.
-  if (idx < 0) return 0;
-  if (!submissoesFiaveis_(submissoes, idx, marcaDe_(io))) return 0;
+  if (idx < 0) {
+    console.log("Reconciliação não corre: não encontrei nenhuma coluna com " +
+      "reservas no formato AAAA-MM-DD | HH:MM-HH:MM na aba das respostas.");
+    return 0;
+  }
+  var marca = marcaDe_(io);
+  if (!submissoesFiaveis_(submissoes, idx, marca)) {
+    console.log("Reconciliação não corre: há linhas a partir da " + marca +
+      " (marca de água) sem reserva legível na coluna " + (idx + 1) +
+      " da aba das respostas. Ou o espelho do JotForm deixou de escrever, " +
+      "ou alguém escreveu linhas à mão nessa aba.");
+    return 0;
+  }
 
   var bruto = planoReconciliacao_(
     io.lerReservas(), contarSubmissoes_(submissoes, idx), io.agora(), JANELA_ORFAS_MS
@@ -443,6 +477,39 @@ function tokenExiste_(linhas, token) {
   return false;
 }
 
+// Quantas linhas do registo pertencem a este slot, em QUALQUER estado — ao
+// contrário do activos_, que só conta as activas. É esta a contagem que a
+// semeadura usa, e a razão é que uma linha `expirado` já teve o seu destino
+// decidido, mas a SUBMISSÃO correspondente fica na folha das respostas para
+// sempre.
+//
+// Reproduzido a contar só as activas: uma reserva feita pelo widget, o dono
+// muda `estado` para `expirado` (cancelamento por telefone, que o guia
+// autoriza), e o semear_ seguinte dava semeadas: 1 e uma linha sub-000001
+// activa novinha — desfazia o cancelamento. E pior: como a submissão daquele
+// hóspede continua a contar em contarSubmissoes_, o excedente daquele slot
+// dá 0 e a reconciliação NUNCA pode libertar a linha nova. O lugar que o
+// dono libertou ficava bloqueado para sempre, sem remédio nenhum.
+//
+// O preço desta escolha, dito por inteiro: uma linha `expirado` que não
+// corresponda a submissão nenhuma (uma reserva abandonada que a reconciliação
+// libertou) também conta aqui. Num slot que tenha ao mesmo tempo submissões
+// sem linha no registo e linhas assim libertadas, a semeadura fica uma linha
+// curta. Não há como distinguir os dois casos — a reconciliação casa por
+// contagens e não por identidade, e as duas escrevem o mesmo `expirado` — e
+// entre desfazer uma decisão explícita do dono e semear uma linha a menos
+// num cruzamento raro, preferimos não desfazer a decisão dele.
+function linhasDoSlot_(linhas, data, horario) {
+  var n = 0;
+  for (var i = 1; i < (linhas || []).length; i++) {
+    var l = linhas[i] || [];
+    if (normalizarData_(l[COL_DATA]) !== data) continue;
+    if (String(l[COL_HORARIO]).trim() !== horario) continue;
+    n++;
+  }
+  return n;
+}
+
 // Que linhas acrescentar à aba Reservas. Só datas >= hoje: uma reserva
 // passada já foi consumida e semeá-la só bloquearia um lugar que ninguém
 // pode usar. Comparação de strings basta — em ISO a ordem lexicográfica é
@@ -490,7 +557,9 @@ function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
 
   for (var k = 0; k < ordem.length; k++) {
     var slot = porSlot[ordem[k]];
-    var falta = slot.linhas.length - activos_(reservas, slot.data, slot.horario);
+    // Em QUALQUER estado: uma linha já expirada conta como coberta, senão a
+    // semeadura desfaz cancelamentos (ver linhasDoSlot_).
+    var falta = slot.linhas.length - linhasDoSlot_(reservas, slot.data, slot.horario);
     for (var n = 0; n < slot.linhas.length && falta > 0; n++) {
       var token = tokenSemeado_(slot.linhas[n]);
       if (tokenExiste_(reservas, token)) continue;
@@ -655,9 +724,43 @@ function escolherAbaSubmissoes_(nomes, ler) {
     if (candidatos[a] === ABA_SUBMISSOES) return candidatos[a];
   }
 
-  // 2. Um nome plausível.
+  // 2. Um nome plausível. Com UM só, é esse. Com mais do que um, o nome já
+  //    não decide e decide o CONTEÚDO: a aba com mais reservas legíveis.
+  //
+  //    O caso confirmado é uma folha com
+  //    ["Reservas","Capacidades","Form responses (backup 2025)","Form responses 1"]:
+  //    pela ordem das abas, o primeiro nome plausível é o BACKUP. E escolher
+  //    o backup é o pior resultado possível de todos os desta função — pior
+  //    do que não encontrar aba nenhuma. A marca de água ficava registada
+  //    sobre a aba morta, nunca lá apareceria uma linha nova, o
+  //    submissoesFiaveis_ passava para sempre, e então TODA a reserva
+  //    genuína futura parecia órfã e era libertada e revendida ao fim de 20
+  //    minutos. Silenciosamente, e para o resto da vida da implantação.
+  //
+  //    Os candidatos vão para o registo de execução: uma escolha errada tem
+  //    de ser visível a quem for investigar, e não uma dedução.
+  var plausiveis = [];
   for (var b = 0; b < candidatos.length; b++) {
-    if (NOME_SUBMISSOES.test(candidatos[b])) return candidatos[b];
+    if (NOME_SUBMISSOES.test(candidatos[b])) plausiveis.push(candidatos[b]);
+  }
+  if (plausiveis.length === 1) return plausiveis[0];
+  if (plausiveis.length > 1) {
+    // Só lemos as abas quando há ambiguidade a resolver: o caminho normal
+    // (uma única aba plausível) continua a não custar leitura nenhuma.
+    var melhorNome = plausiveis[0];
+    var melhorForca = -1;
+    for (var p = 0; p < plausiveis.length; p++) {
+      var forca = forcaReservas_(ler(plausiveis[p]));
+      console.log("Aba candidata a respostas: " + plausiveis[p] +
+        " (reservas legíveis: " + forca + ")");
+      // `>` e não `>=`: em empate fica a primeira pela ordem das abas.
+      if (forca > melhorForca) {
+        melhorForca = forca;
+        melhorNome = plausiveis[p];
+      }
+    }
+    console.log("Aba das respostas escolhida: " + melhorNome);
+    return melhorNome;
   }
 
   // 3. Rede de segurança: a aba que tenha uma coluna com reservas legíveis.
@@ -791,7 +894,11 @@ function doGet(e) {
         // Ninguém a pedir um lugar: não há linha a proteger.
         if (reconciliar_(io, -1)) linhas = io.lerReservas();
       } catch (err) {
-        // Reconciliar é oportunista: falhar aqui não deve impedir o GET.
+        // Reconciliar é oportunista: falhar aqui não deve impedir o GET —
+        // o hóspede continua a receber as contagens. Mas engolir o erro sem
+        // deixar rasto escondia uma reconciliação que nunca funciona atrás
+        // de um GET que parece perfeito.
+        console.log("Reconciliação no GET falhou (o GET segue): " + err);
       } finally {
         lock.releaseLock();
       }
@@ -876,10 +983,35 @@ function preparar() {
 function preparar_() {
   var reservas = folha_(ABA_RESERVAS, true);
   if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
-  // Texto simples nas duas colunas que o Sheets teria coagido a datas —
-  // é isto que tira o fuso da folha da equação (ver formatarTexto_).
-  formatarTexto_(reservas, COL_DATA);
-  formatarTexto_(reservas, COL_CRIADO);
+
+  // Texto simples nas duas colunas que o Sheets teria coagido a datas — é
+  // isto que tira o fuso da folha da equação (ver formatarTexto_). Mas SÓ
+  // enquanto a aba não tiver linhas de dados.
+  //
+  // A razão é uma versão anterior deste script, que deixava o appendRow
+  // coagir as strings ISO em células de DATA. Reformatar essa coluna para
+  // texto simples não converte a célula de volta à string original: uma
+  // célula de data formatada como texto pode devolver o NÚMERO DE SÉRIE do
+  // Sheets no getValues(), e então o normalizarData_ dá "46000". Todas as
+  // reservas guardadas ficariam invisíveis para o activos_ e os lugares
+  // delas seriam vendidos outra vez — exatamente o desastre que este
+  // ficheiro existe para impedir, e desencadeado por um simples segundo
+  // preparar().
+  //
+  // Não foi possível confirmar em Apps Script a partir daqui, por isso
+  // tratamos como risco e não como facto: com uma aba já com dados não há
+  // ganho nenhum em formatar (as linhas antigas já lá estão como estão, e as
+  // novas trazem a string ISO do criadoIso_), e há este risco todo.
+  //
+  // Nota de horizonte: o formatarTexto_ cobre as linhas até ao
+  // getMaxRows() do momento — 1000 numa aba nova. Uma folha que passe disso
+  // volta a ter as colunas em formato automático nas linhas de baixo. Não é
+  // fatal (a coluna `criado` guarda ISO em UTC e o normalizarData_ ainda
+  // aceita Date), mas quem lá chegar deve saber que a garantia tem limite.
+  if (reservas.getLastRow() <= 1) {
+    formatarTexto_(reservas, COL_DATA);
+    formatarTexto_(reservas, COL_CRIADO);
+  }
 
   var caps = folha_(ABA_CAPACIDADES, true);
   if (caps.getLastRow() < 1) {
@@ -954,6 +1086,7 @@ if (typeof module !== "undefined") {
     linhaDoToken_: linhaDoToken_,
     validarPedido_: validarPedido_,
     colunaReserva_: colunaReserva_,
+    forcaReservas_: forcaReservas_,
     contarSubmissoes_: contarSubmissoes_,
     planoReconciliacao_: planoReconciliacao_,
     submissoesFiaveis_: submissoesFiaveis_,
@@ -963,6 +1096,7 @@ if (typeof module !== "undefined") {
     tokenSemeado_: tokenSemeado_,
     tokenExiste_: tokenExiste_,
     marcaSemeadura_: marcaSemeadura_,
+    linhasDoSlot_: linhasDoSlot_,
     planoSemeadura_: planoSemeadura_,
     semear_: semear_,
     criadoIso_: criadoIso_,
