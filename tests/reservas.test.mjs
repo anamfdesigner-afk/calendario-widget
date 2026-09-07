@@ -1266,6 +1266,20 @@ function livroFalso(abas = {}, opcoes = {}) {
 
   function fazerFolha(nome, linhas) {
     const dados = linhas.map(l => l.slice());
+    // O formato de cada coluna, tal como o setNumberFormat o deixa. Só serve
+    // para o `coagirComoSheets`: numa célula em "Automático" o Sheets lê uma
+    // string só de dígitos como NÚMERO, e um submissionID de 19 dígitos não
+    // cabe num double — perde os últimos dígitos e deixa de casar com a aba
+    // das respostas. Numa coluna em "@" (texto simples) fica como está.
+    const formatoDaColuna = {};
+
+    function comoOSheetsGuarda(coluna, v) {
+      if (!opcoes.coagirComoSheets) return v;
+      if (formatoDaColuna[coluna] === "@") return v;
+      if (typeof v !== "string" || !/^\d+$/.test(v)) return v;
+      return Number(v);
+    }
+
     folhas[nome] = {
       dados,
       getName: () => nome,
@@ -1290,12 +1304,16 @@ function livroFalso(abas = {}, opcoes = {}) {
           }
           return out;
         },
+        getValue: () => {
+          const v = (dados[linha - 1] || [])[coluna - 1];
+          return v === undefined ? "" : v;
+        },
         setValue: v => {
           // Permite pôr a ESCRITA a falhar sem pôr a leitura a falhar: é
           // assim que uma reconciliação estoira sem levar atrás o GET.
           if (opcoes.escritaExplosiva === nome) throw new Error("célula em chamas");
           if (!dados[linha - 1]) dados[linha - 1] = [];
-          dados[linha - 1][coluna - 1] = v;
+          dados[linha - 1][coluna - 1] = comoOSheetsGuarda(coluna, v);
         },
         setValues: filas => {
           filas.forEach((fila, r) => {
@@ -1304,7 +1322,10 @@ function livroFalso(abas = {}, opcoes = {}) {
             fila.forEach((v, c) => { dados[alvo][coluna - 1 + c] = v; });
           });
         },
-        setNumberFormat: f => { formatos.push({ aba: nome, coluna, formato: f }); }
+        setNumberFormat: f => {
+          formatos.push({ aba: nome, coluna, formato: f });
+          formatoDaColuna[coluna] = f;
+        }
         });
       },
       appendRow: l => { dados.push(l.slice()); },
@@ -1441,12 +1462,54 @@ test("preparar() não reformata uma aba Reservas que já tem reservas", () => {
 
   gsComStub.preparar();
 
+  // A `submissao` (coluna 8) é a excepção, e é a única: é uma coluna NOVA,
+  // vazia em todas as linhas anteriores, logo não há coerção nenhuma para
+  // desfazer — e sem este formato o primeiro id de 19 dígitos era coagido a
+  // double e a funcionalidade morria em silêncio.
   assert.deepEqual(
     livro.formatos.filter(f => f.aba === "Reservas"),
-    [],
-    "uma aba com dados não pode ser reformatada"
+    [{ aba: "Reservas", coluna: 8, formato: "@" }],
+    "uma aba com dados só pode ser reformatada na coluna nova e vazia"
   );
   assert.equal(livro.folhas["Reservas"].dados.length, 2, "e nada lhe é acrescentado");
+});
+
+test("numa aba Reservas que já tem linhas, o submissionID sobrevive ao preparar()", () => {
+  // A falha que este teste existe para impedir, de ponta a ponta: a aba
+  // `Reservas` do dono JÁ tem linhas (as de teste). Enquanto o
+  // formatarTexto_(COL_SUBMISSAO) esteve dentro da guarda do `getLastRow() <= 1`,
+  // a coluna nova ficava em "Automático"; o primeiro `confirmar` escrevia lá
+  // um id de 19 dígitos, o Sheets coagia-o a double e guardava
+  // 6000000000000000000 em vez de 6000000000000000001; a chave deixava de
+  // casar com o texto da aba das respostas, o plano saía vazio e a
+  // funcionalidade morria em SILÊNCIO — com o preparar() a dizer alegremente
+  // `Coluna do ID: "Submission ID"`.
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["t1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now() - 5000), "activo", "", "", ""]
+    ],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": [CAB_RESPOSTAS, respostaFalsa({ nome: "Ana Silva", id: SUBMISSAO })]
+  }, { propriedades: CONFIGURADO, coagirComoSheets: true });
+  const gsComStub = carregarCom(livro.stubs);
+
+  gsComStub.preparar();
+
+  gsComStub.doPost({
+    parameter: webhook({ rawRequest: raw("2099-01-01 | 08:45-09:30") }),
+    postData: { type: "application/x-www-form-urlencoded", contents: "formID=" + FORM_ID }
+  });
+
+  // O id tem de estar na folha como TEXTO. Se o Sheets o tivesse coagido,
+  // aqui estaria o número 6000000000000000000.
+  assert.equal(livro.folhas["Reservas"].dados[1][7], SUBMISSAO,
+    "o id guardado tem de continuar a ser o id que chegou");
+
+  gsComStub.doGet({ parameter: { data: "2099-01-01" } });
+
+  assert.equal(livro.folhas["Form responses"].dados[1][3], "2099-01-01 | 08:45-09:30",
+    "e a chave tem de casar com a da aba das respostas");
 });
 
 test("preparar() cria as abas e semeia as capacidades", () => {
