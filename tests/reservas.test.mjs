@@ -123,7 +123,11 @@ test("validarPedido_ aceita hoje", () => {
 });
 
 const JANELA = 20 * 60 * 1000;
-const AGORA = Date.parse("2026-09-08T12:00:00Z");
+// Meio-dia LOCAL de 8/9/2026, não meio-dia UTC. O `hoje` do reservar_ vem
+// de normalizarData_(new Date(io.agora())), que usa os getters locais: com
+// um instante fixado em UTC, a leste de UTC+12 o `hoje` caía no dia
+// seguinte ao PEDIDO.data e 14 testes falhavam com data_passada.
+const AGORA = new Date(2026, 8, 8, 12, 0, 0).getTime();
 const VELHO = new Date(AGORA - 60 * 60 * 1000);   // 1 hora: fora da janela
 const NOVO = new Date(AGORA - 60 * 1000);         // 1 minuto: dentro da janela
 
@@ -330,7 +334,7 @@ test("reservar_ NÃO liberta o lugar antigo se o novo slot estiver cheio", () =>
 
 test("reservar_ reconcilia antes de recusar, e o lugar órfão é reaproveitado", () => {
   const velho = new Date(AGORA - 60 * 60 * 1000);
-  const { io } = ioFalso(
+  const { io, estado } = ioFalso(
     [
       CAB,
       ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
@@ -340,7 +344,18 @@ test("reservar_ reconcilia antes de recusar, e o lugar órfão é reaproveitado"
   );
   // Duas reservas antigas, mas só uma submissão: uma é órfã e liberta lugar.
   const r = gs.reservar_(PEDIDO, io);
-  assert.equal(r.reservado, true);
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "novo" });
+  // Só o "reservado: true" não chegava: era precisamente esta a asserção
+  // que faltava para apanhar uma reconciliação que expira demasiado (o
+  // caso da marca de água) ou a linha errada (a de quem pede).
+  assert.deepEqual(estado.expiradas, [1], "exatamente UMA órfã, a mais antiga");
+  assert.equal(estado.reservas[1][4], "expirado");
+  assert.equal(estado.reservas[2][4], "activo", "a que tem submissão sobrevive");
+  assert.equal(estado.acrescentadas.length, 1);
+  assert.equal(estado.acrescentadas[0][0], PEDIDO.token);
+  // Capacidade 2: a x2 mais a nova. O lugar libertado foi reaproveitado
+  // uma única vez.
+  assert.equal(gs.activos_(estado.reservas, "2026-09-08", "08:45-09:30"), 2);
 });
 
 test("reservar_ não reconcilia quando as submissões são ilegíveis", () => {
@@ -1088,6 +1103,70 @@ test("a resposta sai marcada como JSON", () => {
   const gsComStub = carregarCom(livro.stubs);
   const resposta = gsComStub.doGet({ parameter: { data: "2099-01-01" } });
   assert.equal(resposta.mime, "application/json");
+});
+
+// ===============================
+// AS FUNÇÕES DE MANUTENÇÃO TAMBÉM PRECISAM DO LOCK
+// ===============================
+
+test("preparar() corre dentro do lock e larga-o", () => {
+  const livro = livroFalso({ "Form responses": LINHAS_COM_RESERVA });
+  const gsComStub = carregarCom(livro.stubs);
+  gsComStub.preparar();
+  assert.deepEqual(livro.chamadas.tryLock, [20000]);
+  assert.equal(livro.chamadas.releaseLock, 1);
+});
+
+test("limparTestes() apaga só as linhas de teste, dentro do lock", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["conc-teste-1", "2099-01-01", "08:00-08:45", "x", "activo"],
+      ["abcd-1234-efgh", "2099-01-01", "08:00-08:45", "x", "activo"],
+      ["conc-teste-2", "2099-01-01", "08:00-08:45", "x", "activo"]
+    ],
+    Capacidades: CAPS_FOLHA
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.match(gsComStub.limparTestes(), /apagadas: 2/);
+  // O deleteRow desloca índices: é por isso que isto precisa do mesmo lock
+  // que o doPost, que já pode ter calculado o seu plano.
+  assert.deepEqual(livro.folhas["Reservas"].dados.map(l => l[0]), ["token", "abcd-1234-efgh"]);
+  assert.deepEqual(livro.chamadas.tryLock, [20000]);
+  assert.equal(livro.chamadas.releaseLock, 1);
+});
+
+test("as funções de manutenção não mexem na folha sem o lock", () => {
+  const abas = {
+    Reservas: [CAB, ["conc-teste-1", "2099-01-01", "08:00-08:45", "x", "activo"]],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": LINHAS_COM_RESERVA
+  };
+  const livro = livroFalso(abas, { lockIndisponivel: true });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.match(gsComStub.preparar(), /ocupada/);
+  assert.match(gsComStub.limparTestes(), /ocupada/);
+  assert.match(gsComStub.semear(), /ocupada/);
+  // Nada mudou: nem semeaduras, nem apagamentos.
+  assert.equal(livro.folhas["Reservas"].dados.length, 2);
+  assert.equal(livro.chamadas.releaseLock, 0);
+});
+
+test("semear() corre dentro do lock e relata quantas semeou", () => {
+  const livro = livroFalso({
+    Reservas: [CAB],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": LINHAS_COM_RESERVA
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.match(gsComStub.semear(), /submissões: 1/);
+  assert.deepEqual(livro.chamadas.tryLock, [20000]);
+  assert.equal(livro.chamadas.releaseLock, 1);
+  // E gravou a marca de água nas ScriptProperties.
+  assert.equal(livro.propriedades.marcaSubmissoes, String(LINHAS_COM_RESERVA.length));
 });
 
 // ===============================

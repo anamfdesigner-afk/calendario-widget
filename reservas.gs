@@ -48,6 +48,14 @@ var ESPERA_LOCK_MS = 3500;
 
 var ESPERA_LOCK_GET_MS = 5000;
 
+// O preparar(), o semear() e o limparTestes() correm à mão a partir do
+// editor, onde não há hóspede nenhum à espera nem orçamento de cliente a
+// respeitar. Podem esperar muito mais do que o caminho da reserva — e mais
+// vale esperar do que devolver ao dono uma mensagem de "ocupado".
+var ESPERA_LOCK_MANUTENCAO_MS = 20000;
+
+var AVISO_OCUPADO = "A folha está ocupada neste momento. Tente outra vez dentro de um minuto.";
+
 // ===============================
 // CAPACIDADES (funções puras)
 // ===============================
@@ -488,7 +496,7 @@ function semear_(io) {
 // executável para o caso de a aba das submissões só aparecer depois.
 function semear() {
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(ESPERA_LOCK_MS)) return "A folha está ocupada. Tente outra vez.";
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return AVISO_OCUPADO;
   try {
     return "Reservas semeadas a partir das submissões: " + semear_(ioReal_()).semeadas;
   } finally {
@@ -769,6 +777,21 @@ function doPost(e) {
 // Corre UMA vez a partir do editor. Cria as abas e semeia as capacidades
 // atuais. É preferível a pedir ao dono para criar abas à mão.
 function preparar() {
+  var lock = LockService.getScriptLock();
+  // O mesmo lock do doPost. O preparar() acrescenta linhas e o limparTestes()
+  // apaga-as; sem o lock, um deles corre a meio de um doPost que já leu a
+  // folha e já calculou o seu plano de reconciliação, e o setValue do
+  // expirar vai marcar `expirado` na linha errada — uma reserva real de um
+  // hóspede que nada tem a ver com isto.
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return AVISO_OCUPADO;
+  try {
+    return preparar_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function preparar_() {
   var reservas = folha_(ABA_RESERVAS, true);
   if (reservas.getLastRow() < 1) reservas.appendRow(CABECALHO_RESERVAS);
   // Texto simples nas duas colunas que o Sheets teria coagido a datas —
@@ -802,6 +825,18 @@ function preparar() {
 // de escrever à mão na folha: um clique mal dado já apagou o email de um
 // hóspede real.
 function limparTestes() {
+  var lock = LockService.getScriptLock();
+  // O deleteRow é a operação mais perigosa do ficheiro: desloca todos os
+  // índices abaixo dele. Ver o comentário do preparar().
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return AVISO_OCUPADO;
+  try {
+    return limparTestes_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function limparTestes_() {
   var aba = folha_(ABA_RESERVAS, false);
   if (!aba) return "Aba Reservas não existe.";
   var linhas = lerTudo_(ABA_RESERVAS) || [];
