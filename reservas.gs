@@ -253,13 +253,31 @@ function linhaDoToken_(linhas, token) {
   return null;
 }
 
-// A linha `activo` mais antiga daquele par data+horário: é ela que o webhook
-// confirma. Sem timestamp legível, a linha continua candidata (pela ordem da
-// folha) em vez de ser ignorada — ignorá-la faria o webhook não encontrar
-// nada e não confirmar reserva nenhuma.
-function maisAntigaActiva_(linhas, data, horario) {
-  var melhor = -1;
-  var melhorCriado = Infinity;
+// A linha `activo` que o webhook confirma: a mais antiga DENTRO DA JANELA das
+// órfãs e, se não houver nenhuma lá dentro, a mais antiga de todas.
+//
+// A janela não é zelo: uma linha `activo` abandonada só é libertada quando
+// alguém bate num slot cheio, logo um horário com lugares de sobra acumula
+// fantasmas indefinidamente. Sem a preferência, uma fantasma de três horas
+// absorvia a confirmação da submissão que acabou de chegar — verificado — e a
+// linha verdadeira, deixada `activo`, era expirada 21 minutos depois: o
+// hóspede perdia o lugar que tinha pago e o nome dele ficava colado à
+// fantasma. Pior, ao re-submeter já não havia linha viva do seu token, criava-
+// -se uma segunda e um segundo webhook confirmava-a: dois lugares permanentes
+// para um hóspede, que é o buraco que o linhaDoToken_ fechou.
+//
+// Quando o webhook de uma submissão verdadeira chega, a linha dela tem
+// segundos — está sempre dentro da janela. Isto estreita também o C1.
+//
+// Sem timestamp legível, a linha continua candidata (como último recurso, pela
+// ordem da folha) em vez de ser ignorada — ignorá-la faria o webhook não
+// encontrar nada e não confirmar reserva nenhuma.
+function maisAntigaActiva_(linhas, data, horario, agoraMs, janelaMs) {
+  var naJanela = -1;
+  var naJanelaCriado = Infinity;
+  var qualquer = -1;
+  var qualquerCriado = Infinity;
+
   for (var i = 1; i < (linhas || []).length; i++) {
     var l = linhas[i] || [];
     if (String(l[COL_ESTADO]).trim() !== ESTADO_ACTIVO) continue;
@@ -267,13 +285,24 @@ function maisAntigaActiva_(linhas, data, horario) {
     if (String(l[COL_HORARIO]).trim() !== horario) continue;
 
     var criado = criadoMs_(l[COL_CRIADO]);
-    if (!isFinite(criado)) criado = Infinity;
-    if (melhor < 0 || criado < melhorCriado) {
-      melhor = i;
-      melhorCriado = criado;
+    var legivel = isFinite(criado);
+    if (!legivel) criado = Infinity;
+
+    if (qualquer < 0 || criado < qualquerCriado) {
+      qualquer = i;
+      qualquerCriado = criado;
+    }
+    // Uma linha sem timestamp legível não se sabe se está dentro da janela,
+    // por isso não entra nesta preferência — fica no último recurso.
+    if (legivel && agoraMs - criado <= janelaMs) {
+      if (naJanela < 0 || criado < naJanelaCriado) {
+        naJanela = i;
+        naJanelaCriado = criado;
+      }
     }
   }
-  return melhor;
+
+  return naJanela >= 0 ? naJanela : qualquer;
 }
 
 // ===============================
@@ -652,7 +681,8 @@ function confirmarWebhook_(params, io) {
   // linha em falta não desmente isso.
   io.gravarUltimoWebhook(io.agora());
 
-  var indice = maisAntigaActiva_(io.lerReservas(), dados.data, dados.horario);
+  var indice = maisAntigaActiva_(
+    io.lerReservas(), dados.data, dados.horario, io.agora(), JANELA_ORFAS_MS);
   if (indice < 0) {
     console.log("Webhook sem linha activa para " + dados.data + " | " +
       dados.horario + ": nada confirmado e nada criado. Ou a reconciliação " +

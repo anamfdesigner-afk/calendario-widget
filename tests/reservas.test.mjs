@@ -148,15 +148,38 @@ test("linhaDoToken_ encontra as linhas activas e as confirmadas", () => {
 test("maisAntigaActiva_ devolve a linha activa mais antiga do slot", () => {
   const linhas = [
     CAB,
-    ["t1", "2026-09-08", "08:45-09:30", "2026-09-08T11:30:00.000Z", "activo", "", ""],
-    ["t2", "2026-09-08", "08:45-09:30", "2026-09-08T10:00:00.000Z", "activo", "", ""],
-    ["t3", "2026-09-08", "08:45-09:30", "2026-09-08T09:00:00.000Z", "confirmado", "1", "X"],
-    ["t4", "2026-09-08", "08:00-08:45", "2026-09-08T08:00:00.000Z", "activo", "", ""]
+    ["t1", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 3 * 60 * 1000), "activo", "", ""],
+    ["t2", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 8 * 60 * 1000), "activo", "", ""],
+    ["t3", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 9 * 60 * 1000), "confirmado", "1", "X"],
+    ["t4", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 10 * 60 * 1000), "activo", "", ""]
   ];
-  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30"), 2);
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30", AGORA, JANELA), 2);
   // Já confirmada não volta a ser confirmada, e o slot errado não conta.
-  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-09", "08:45-09:30"), -1);
-  assert.equal(gs.maisAntigaActiva_([CAB], "2026-09-08", "08:45-09:30"), -1);
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-09", "08:45-09:30", AGORA, JANELA), -1);
+  assert.equal(gs.maisAntigaActiva_([CAB], "2026-09-08", "08:45-09:30", AGORA, JANELA), -1);
+});
+
+test("maisAntigaActiva_ prefere a activa mais antiga DENTRO da janela das órfãs", () => {
+  // Uma linha `activo` abandonada só é libertada quando alguém bate num slot
+  // cheio, logo um horário com lugares de sobra acumula fantasmas
+  // indefinidamente. Sem esta preferência, uma fantasma de três horas absorvia
+  // a confirmação da submissão que acabou de chegar, e a linha verdadeira,
+  // deixada `activo`, era expirada 21 minutos depois.
+  const linhas = [
+    CAB,
+    ["fantasma", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 3 * 60 * 60 * 1000), "activo", "", ""],
+    ["real", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 30 * 1000), "activo", "", ""]
+  ];
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30", AGORA, JANELA), 2);
+
+  // Sem nenhuma dentro da janela, volta a valer a mais antiga de todas: mais
+  // vale confirmar uma linha velha do que não confirmar nenhuma.
+  const soFantasmas = [
+    CAB,
+    ["f2", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 2 * 60 * 60 * 1000), "activo", "", ""],
+    ["f1", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 3 * 60 * 60 * 1000), "activo", "", ""]
+  ];
+  assert.equal(gs.maisAntigaActiva_(soFantasmas, "2026-09-08", "08:45-09:30", AGORA, JANELA), 2);
 });
 
 test("maisAntigaActiva_ não ignora uma linha sem timestamp legível", () => {
@@ -166,7 +189,16 @@ test("maisAntigaActiva_ não ignora uma linha sem timestamp legível", () => {
     CAB,
     ["t1", "2026-09-08", "08:45-09:30", "", "activo", "", ""]
   ];
-  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30"), 1);
+  assert.equal(gs.maisAntigaActiva_(linhas, "2026-09-08", "08:45-09:30", AGORA, JANELA), 1);
+
+  // Mas não passa à frente de uma linha que se sabe estar dentro da janela:
+  // não se sabe se a ilegível ainda é uma submissão a decorrer.
+  const comLegivel = [
+    CAB,
+    ["ilegivel", "2026-09-08", "08:45-09:30", "", "activo", "", ""],
+    ["real", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 30 * 1000), "activo", "", ""]
+  ];
+  assert.equal(gs.maisAntigaActiva_(comLegivel, "2026-09-08", "08:45-09:30", AGORA, JANELA), 2);
 });
 
 test("validarPedido_ rejeita cada campo inválido com o seu código", () => {
@@ -880,6 +912,33 @@ test("um webhook válido confirma a activa mais antiga e escreve quarto e nome",
   assert.equal(estado.reservas[1][4], "activo", "a outra linha fica como estava");
   // E fica a prova de que o webhook funciona: é ela que arma a reconciliação.
   assert.equal(estado.ultimoWebhook, new Date(AGORA).toISOString());
+});
+
+test("uma fantasma velha não absorve a confirmação da reserva verdadeira", () => {
+  // Verificado antes da correção: a fantasma de três horas ficava
+  // `confirmado` com o nome do hóspede que acabou de submeter, a linha real
+  // ficava `activo` e era expirada 21 minutos depois. O hóspede perdia o
+  // lugar; ao re-submeter criava uma segunda linha, um segundo webhook
+  // confirmava-a, e ficavam dois lugares permanentes para um hóspede.
+  const { io, estado } = ioFalso([
+    CAB,
+    ["fantasma", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 3 * 60 * 60 * 1000), "activo", "", ""],
+    ["real", "2026-09-08", "08:45-09:30", gs.criadoIso_(AGORA - 30 * 1000), "activo", "", ""]
+  ]);
+
+  assert.deepEqual(gs.confirmarWebhook_(webhook(), io), { ok: true, confirmado: true });
+  assert.deepEqual(estado.confirmadas, [{ indice: 2, quarto: "12", nome: "Ana Silva" }]);
+  assert.equal(estado.reservas[2][4], "confirmado", "a reserva verdadeira");
+  assert.equal(estado.reservas[1][4], "activo", "a fantasma continua a ser uma fantasma");
+
+  // E 21 minutos depois é a FANTASMA que é libertada, não a reserva real.
+  const depois = ioFalso(estado.reservas, {
+    ultimoWebhook: gs.criadoIso_(AGORA),
+    agora: AGORA + 21 * 60 * 1000
+  });
+  assert.equal(gs.reconciliar_(depois.io, -1), 1);
+  assert.deepEqual(depois.estado.expiradas, [1]);
+  assert.equal(depois.estado.reservas[2][4], "confirmado");
 });
 
 test("um webhook com o segredo errado não confirma nada", () => {
