@@ -496,9 +496,9 @@ function semear_(io) {
 // executável para o caso de a aba das submissões só aparecer depois.
 function semear() {
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return AVISO_OCUPADO;
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return relatar_(AVISO_OCUPADO);
   try {
-    return "Reservas semeadas a partir das submissões: " + semear_(ioReal_()).semeadas;
+    return relatar_("Reservas semeadas a partir das submissões: " + semear_(ioReal_()).semeadas);
   } finally {
     lock.releaseLock();
   }
@@ -774,6 +774,16 @@ function doPost(e) {
 // ===============================
 // INSTALAÇÃO E LIMPEZA
 // ===============================
+// O editor do Apps Script NÃO mostra o valor devolvido por uma função —
+// só mostra o painel "Registo de execução". Sem este console.log, a
+// mensagem que o dono tem de CONFIRMAR na instalação (qual a aba das
+// respostas foi encontrada, quantas reservas foram semeadas) não aparecia
+// em sítio nenhum e a confirmação era impossível.
+function relatar_(mensagem) {
+  console.log(mensagem);
+  return mensagem;
+}
+
 // Corre UMA vez a partir do editor. Cria as abas e semeia as capacidades
 // atuais. É preferível a pedir ao dono para criar abas à mão.
 function preparar() {
@@ -783,9 +793,9 @@ function preparar() {
   // folha e já calculou o seu plano de reconciliação, e o setValue do
   // expirar vai marcar `expirado` na linha errada — uma reserva real de um
   // hóspede que nada tem a ver com isto.
-  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return AVISO_OCUPADO;
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return relatar_(AVISO_OCUPADO);
   try {
-    return preparar_();
+    return relatar_(preparar_());
   } finally {
     lock.releaseLock();
   }
@@ -828,9 +838,9 @@ function limparTestes() {
   var lock = LockService.getScriptLock();
   // O deleteRow é a operação mais perigosa do ficheiro: desloca todos os
   // índices abaixo dele. Ver o comentário do preparar().
-  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return AVISO_OCUPADO;
+  if (!lock.tryLock(ESPERA_LOCK_MANUTENCAO_MS)) return relatar_(AVISO_OCUPADO);
   try {
-    return limparTestes_();
+    return relatar_(limparTestes_());
   } finally {
     lock.releaseLock();
   }
