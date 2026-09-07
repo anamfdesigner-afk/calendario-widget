@@ -268,7 +268,8 @@ test("planoReconciliacao_ liberta a activa que já passou da janela", () => {
     ["t1", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""],
     ["t2", "2026-09-08", "08:00-08:45", NOVO, "activo", "", ""]
   ];
-  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [1]);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA),
+    [{ indice: 1, token: "t1" }]);
 });
 
 test("planoReconciliacao_ nunca toca em linhas dentro da janela", () => {
@@ -288,7 +289,8 @@ test("planoReconciliacao_ NUNCA liberta uma reserva confirmada", () => {
     ["t2", "2026-09-08", "08:00-08:45", VELHO, "expirado", "", ""],
     ["t3", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""]
   ];
-  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [3]);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA),
+    [{ indice: 3, token: "t3" }]);
 });
 
 test("planoReconciliacao_ deixa em paz uma linha sem timestamp legível", () => {
@@ -302,7 +304,24 @@ test("planoReconciliacao_ lê o criado a partir da string ISO", () => {
     ["t1", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 60 * 1000), "activo", "", ""],
     ["t2", "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", ""]
   ];
-  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [1]);
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA),
+    [{ indice: 1, token: "t1" }]);
+});
+
+test("o plano da reconciliação leva o token de cada linha, não só o índice", () => {
+  // É o token que o io relê na folha antes de escrever `expirado`. Sem ele, a
+  // escrita confia em números de linha lidos dois pedidos ao Sheets antes — e
+  // uma ordenação do dono nessa janela expirava uma reserva viva.
+  const reservas = [
+    CAB,
+    ["  t1  ", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""],
+    ["t2", "2026-09-08", "08:00-08:45", VELHO, "activo", "", ""]
+  ];
+  assert.deepEqual(gs.planoReconciliacao_(reservas, AGORA, JANELA), [
+    // Aparado, tal como o linhaDoToken_ o compara: uma regra só para os dois.
+    { indice: 1, token: "t1" },
+    { indice: 2, token: "t2" }
+  ]);
 });
 
 function ioFalso(reservas, opcoes = {}) {
@@ -310,6 +329,9 @@ function ioFalso(reservas, opcoes = {}) {
     reservas: reservas.map(l => l.slice()),
     acrescentadas: [],
     expiradas: [],
+    // As entradas {indice, token} tal como chegaram, para os testes que
+    // querem ver o token e não só o índice.
+    planoExpirar: [],
     confirmadas: [],
     // A aba das respostas, tal como a integração do JotForm a mantém: o
     // cabeçalho na linha 1 e uma linha por submissão. Por omissão não existe —
@@ -338,16 +360,38 @@ function ioFalso(reservas, opcoes = {}) {
         estado.acrescentadas.push(linha);
         estado.reservas.push(linha);
       },
-      expirar: indices => {
-        estado.expiradas.push(...indices);
-        indices.forEach(i => { estado.reservas[i][4] = "expirado"; });
+      // O plano são entradas {indice, token}: é o token que o io real relê na
+      // folha antes de escrever. Aqui a folha é um array em memória e não se
+      // mexe sozinha, mas o token é CONFERIDO na mesma — assim um chamador que
+      // mande o token errado (ou nenhum) falha alto, em vez de passar por aqui
+      // e só partir no io real, onde ninguém está a ver.
+      expirar: plano => {
+        estado.planoExpirar.push(...plano);
+        plano.forEach(p => {
+          const naFolha = String(estado.reservas[p.indice][0]).trim();
+          if (naFolha !== p.token) {
+            throw new Error("expirar recebeu o token \"" + p.token +
+              "\" para a linha " + p.indice + ", que tem \"" + naFolha + "\"");
+          }
+          estado.expiradas.push(p.indice);
+          estado.reservas[p.indice][4] = "expirado";
+        });
       },
-      confirmar: (indice, quarto, nome, submissao) => {
-        estado.confirmadas.push({ indice, quarto, nome, submissao });
-        estado.reservas[indice][4] = "confirmado";
-        estado.reservas[indice][5] = quarto;
-        estado.reservas[indice][6] = nome;
-        estado.reservas[indice][7] = submissao;
+      confirmar: (alvo, quarto, nome, submissao) => {
+        const naFolha = String(estado.reservas[alvo.indice][0]).trim();
+        if (naFolha !== alvo.token) {
+          throw new Error("confirmar recebeu o token \"" + alvo.token +
+            "\" para a linha " + alvo.indice + ", que tem \"" + naFolha + "\"");
+        }
+        estado.confirmadas.push({ indice: alvo.indice, quarto, nome, submissao });
+        estado.reservas[alvo.indice][4] = "confirmado";
+        estado.reservas[alvo.indice][5] = quarto;
+        estado.reservas[alvo.indice][6] = nome;
+        estado.reservas[alvo.indice][7] = submissao;
+        // O io real devolve `true` quando escreveu mesmo — e é por essa
+        // resposta que o confirmarWebhook_ decide gravar (ou não) a submissão
+        // no anel das já vistas.
+        return true;
       },
       lerRespostas: () => estado.respostas,
       escreverRespostas: plano => {
@@ -2585,7 +2629,9 @@ test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha"
   const folhaFalsa = {
     getRange: (linha, coluna) => {
       chamadasGetRange.push([linha, coluna]);
-      return { setValue: () => {} };
+      // A linha 2 ainda tem o token que o plano escolheu: a reconfirmação
+      // passa e a escrita acontece.
+      return { getValue: () => "t1", setValue: () => {} };
     }
   };
   const ssFalso = { getSheetByName: () => folhaFalsa, insertSheet: () => folhaFalsa };
@@ -2593,11 +2639,12 @@ test("ioReal_.expirar converte índice 0-based em linha/coluna 1-based da folha"
     SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
   });
 
-  gsComStub.ioReal_().expirar([1]);
+  gsComStub.ioReal_().expirar([{ indice: 1, token: "t1" }]);
 
   // índice 1 (a segunda linha do array, cabeçalho incluído) → linha 2 da
-  // folha; COL_ESTADO = 4 → coluna 5.
-  assert.deepEqual(chamadasGetRange, [[2, 5]]);
+  // folha; COL_TOKEN = 0 → coluna 1 (a reconfirmação), COL_ESTADO = 4 →
+  // coluna 5 (a escrita).
+  assert.deepEqual(chamadasGetRange, [[2, 1], [2, 5]]);
 });
 
 test("ioReal_.confirmar escreve o estado primeiro, e depois quarto, nome e submissao", () => {
@@ -2607,6 +2654,7 @@ test("ioReal_.confirmar escreve o estado primeiro, e depois quarto, nome e submi
   const escritas = [];
   const folhaFalsa = {
     getRange: (linha, coluna) => ({
+      getValue: () => "t1",
       setValue: v => { escritas.push([linha, coluna, v]); }
     })
   };
@@ -2616,7 +2664,9 @@ test("ioReal_.confirmar escreve o estado primeiro, e depois quarto, nome e submi
     SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => { flushes++; } }
   });
 
-  gsComStub.ioReal_().confirmar(1, "12", "Ana Silva", SUBMISSAO);
+  assert.equal(
+    gsComStub.ioReal_().confirmar({ indice: 1, token: "t1" }, "12", "Ana Silva", SUBMISSAO),
+    true, "escreveu mesmo, e diz que sim");
 
   // índice 1 → linha 2; COL_ESTADO = 4 → coluna 5; COL_QUARTO = 5 → 6;
   // COL_NOME = 6 → 7; COL_SUBMISSAO = 7 → coluna 8. Um deslize de um aqui
@@ -2637,6 +2687,7 @@ test("ioReal_.confirmar grava vazio quando o webhook não trouxe submissionID", 
   const escritas = [];
   const folhaFalsa = {
     getRange: (linha, coluna) => ({
+      getValue: () => "t1",
       setValue: v => { escritas.push([linha, coluna, v]); }
     })
   };
@@ -2645,9 +2696,120 @@ test("ioReal_.confirmar grava vazio quando o webhook não trouxe submissionID", 
     SpreadsheetApp: { getActiveSpreadsheet: () => ssFalso, flush: () => {} }
   });
 
-  gsComStub.ioReal_().confirmar(1, "12", "Ana Silva");
+  gsComStub.ioReal_().confirmar({ indice: 1, token: "t1" }, "12", "Ana Silva");
 
   assert.deepEqual(escritas[3], [2, 8, ""]);
+});
+
+// ===============================
+// O DONO ORDENOU A ABA `Reservas` DEBAIXO DO PROGRAMA
+// ===============================
+// A mesma janela que o espelho já cobria na aba das respostas, mas na aba
+// onde os lugares vivem — e onde o dano é o pior de todos. O plano da
+// reconciliação e a linha que o webhook confirma são números de linha lidos
+// DOIS pedidos ao Sheets antes da escrita, e o lock do script não exclui uma
+// pessoa a mexer na folha à mão. O guia mandava o dono ordenar pela coluna
+// `data` para tirar a lista da manhã: chegámos ao lugar revendido pelo
+// conselho que lhe demos.
+
+const ORFA = "orfa-0000-0001";
+const VIVA = "viva-0000-0002";
+
+// Duas activas no mesmo slot: a primeira já passou dos 20 minutos (é órfã), a
+// segunda tem um minuto (é uma reserva a valer).
+function reservasParaOrdenar() {
+  return [
+    CAB,
+    [ORFA, "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 60 * 1000), "activo", "", "", ""],
+    [VIVA, "2026-09-08", "08:00-08:45", gs.criadoIso_(AGORA - 60 * 1000), "activo", "", "", ""]
+  ];
+}
+
+test("o dono ordenou a aba Reservas entre o plano e o expirar: a viva sobrevive", () => {
+  // Verificado antes desta guarda existir: a linha 2 ficava `expirado` com o
+  // token `viva-0000-0002` — uma reserva de um hóspede marcada como
+  // libertada, e o lugar dela vendido outra vez ao hóspede seguinte.
+  const livro = livroFalso({ Reservas: reservasParaOrdenar() });
+  const gsComStub = carregarCom(livro.stubs);
+  const dados = livro.folhas["Reservas"].dados;
+
+  const plano = gsComStub.planoReconciliacao_(
+    dados.map(l => l.slice()), AGORA, JANELA);
+  assert.deepEqual(plano, [{ indice: 1, token: ORFA }]);
+
+  // E agora o dono ordena a aba: as duas linhas trocam de sítio.
+  const trocada = dados[1];
+  dados[1] = dados[2];
+  dados[2] = trocada;
+
+  const registo = comRegisto(() => gsComStub.ioReal_().expirar(plano));
+
+  assert.equal(dados[1][0], VIVA);
+  assert.equal(dados[1][4], "activo",
+    "a reserva viva não pode ser expirada — o lugar dela seria vendido outra vez");
+  assert.equal(dados[2][4], "activo",
+    "e a órfã não se expira às cegas: fica para a passagem seguinte");
+  // E não em silêncio: um caminho que não escreve e não se queixa é a
+  // assinatura da avaria que este projeto já pagou uma vez.
+  assert.match(registo, /não foram libertadas/);
+  assert.equal(livro.chamadas.flush, 0, "sem escritas, nem se gasta um flush");
+
+  // A passagem seguinte, já com a folha ordenada, liberta a órfã como deve
+  // ser: o salto cura-se sozinho, e é por isso que o expirar não precisa de
+  // dizer nada ao chamador.
+  gsComStub.ioReal_().expirar(
+    gsComStub.planoReconciliacao_(dados.map(l => l.slice()), AGORA, JANELA));
+  assert.equal(dados[2][4], "expirado", "a órfã, e só ela");
+  assert.equal(dados[1][4], "activo");
+});
+
+test("o dono ordenou a aba Reservas entre a escolha da linha e o confirmar", () => {
+  // O outro lado da mesma janela. Verificado antes desta guarda existir: o
+  // quarto e o nome da Ana iam para a linha do Rui, a linha da Ana ficava
+  // `activo` e era expirada 20 minutos depois — ela perdia o lugar que tinha
+  // pago e o nome dela ficava colado à reserva de outro hóspede.
+  const livro = livroFalso({ Reservas: reservasParaOrdenar() });
+  const gsComStub = carregarCom(livro.stubs);
+  const dados = livro.folhas["Reservas"].dados;
+
+  const instantaneo = dados.map(l => l.slice());
+  const indice = gsComStub.maisAntigaActiva_(
+    instantaneo, "2026-09-08", "08:00-08:45", AGORA, JANELA);
+  const alvo = { indice: indice, token: instantaneo[indice][0] };
+  assert.deepEqual(alvo, { indice: 2, token: VIVA }, "a activa DENTRO da janela");
+
+  const trocada = dados[1];
+  dados[1] = dados[2];
+  dados[2] = trocada;
+
+  assert.equal(
+    gsComStub.ioReal_().confirmar(alvo, "12", "Ana Silva", SUBMISSAO),
+    false, "não escreveu, e diz que não escreveu");
+
+  assert.equal(dados[2][0], ORFA);
+  assert.equal(dados[2][6], "", "o nome não vai parar à linha de outra reserva");
+  assert.equal(dados[2][4], "activo", "nem o estado");
+  assert.equal(dados[1][4], "activo", "e a linha certa fica como estava");
+});
+
+test("uma confirmação saltada não gasta a submissão no anel das já vistas", () => {
+  // Ao contrário do expirar, o salto do confirmar NÃO se cura sozinho: o
+  // webhook desta submissão já veio. Se a gravássemos no anel, a reentrega da
+  // JotForm era recusada como repetida, a linha ficava `activo` e o lugar era
+  // revendido aos 20 minutos — a guarda contra a linha errada acabava a
+  // custar o mesmo lugar que existe para salvar.
+  const { io, estado } = ioFalso(DUAS_ACTIVAS);
+  io.confirmar = () => false;
+
+  const registo = comRegisto(() => {
+    assert.deepEqual(gs.confirmarWebhook_(webhook(), io),
+      { ok: true, confirmado: false, motivo: "linha_mudou" });
+  });
+
+  assert.equal(estado.submissoes, "", "o anel fica intacto: a reentrega é bem-vinda");
+  assert.match(registo, /Confirmação não escrita/);
+  // A marca do canal fica: o webhook CHEGOU, e é isso que ela prova.
+  assert.equal(estado.ultimoWebhook, new Date(AGORA).toISOString());
 });
 
 test("ioReal_.escreverRespostas escreve célula a célula e não mexe em mais nada", () => {

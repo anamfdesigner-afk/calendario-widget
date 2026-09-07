@@ -18,7 +18,12 @@ Abra a aba **Reservas**. Cada linha é um lugar ao pequeno-almoço:
 | `estado` | ver em baixo |
 | `token`, `criado`, `submissao` | uso interno do programa — ignore |
 
-Para a lista da manhã, ordene ou filtre pela coluna **`data`**.
+Para a lista da manhã, **filtre** pela coluna **`data`** — nesta aba não ordene.
+
+Ordenar mexe as linhas de sítio por baixo do programa, e ele trabalha por números de
+linha: fica a olhar para uma linha que entretanto passou a ser outra. Ele dá por isso e
+prefere não escrever nada a escrever no sítio errado, mas assim fica trabalho por fazer.
+Um filtro esconde linhas sem as mexer, e não lhe custa nada.
 
 ### O que quer dizer o `estado`
 
@@ -91,6 +96,7 @@ publicar nem avisar ninguém.
 Na aba **Reservas**:
 
 - ❌ não acrescente nem apague linhas
+- ❌ **não ordene as linhas** — para ver por data, use um filtro (ver o ponto 1)
 - ❌ não altere `token`, `data`, `horario`, `criado` nem `submissao`
 - ✅ só a coluna `estado`, como no ponto 2
 

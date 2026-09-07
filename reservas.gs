@@ -230,6 +230,19 @@ function ocupaLugar_(estado) {
   return e === ESTADO_ACTIVO || e === ESTADO_CONFIRMADO;
 }
 
+// O token de uma linha, com UMA regra só. É por este valor que o io
+// reconfirma a linha antes de lhe escrever (ver ioReal_.expirar e
+// ioReal_.confirmar), e é por ele que o linhaDoToken_ a escolhe: se as duas
+// normalizações divergissem, a reconfirmação falhava sempre e nada voltava a
+// ser escrito — uma avaria silenciosa exactamente onde não se pode ter uma.
+function normalizarToken_(v) {
+  return String(v == null ? "" : v).trim();
+}
+
+function tokenDaLinha_(linha) {
+  return normalizarToken_((linha || [])[COL_TOKEN]);
+}
+
 function ocupados_(linhas, data, horario) {
   var n = 0;
   for (var i = 1; i < (linhas || []).length; i++) {
@@ -267,7 +280,7 @@ function linhaDoToken_(linhas, token) {
   for (var i = 1; i < (linhas || []).length; i++) {
     var l = linhas[i] || [];
     if (!ocupaLugar_(l[COL_ESTADO])) continue;
-    if (String(l[COL_TOKEN]).trim() !== token) continue;
+    if (tokenDaLinha_(l) !== token) continue;
     return {
       indice: i,
       data: normalizarData_(l[COL_DATA]),
@@ -378,6 +391,16 @@ function validarPedido_(pedido, caps, hoje) {
 // troca de horário (só depois de garantir o novo lugar), e o dono pode
 // escrever `expirado` à mão para cancelar. O que nunca acontece é uma linha
 // confirmada ser libertada por decorrer o tempo.
+//
+// Cada entrada leva o `indice` E o `token` da linha, para o io poder
+// RECONFIRMAR a linha antes de lhe escrever `expirado` — é o mesmo padrão do
+// planoRespostas_, e está aqui pela mesma razão, com o dobro da consequência.
+// O plano é calculado sobre uma leitura da folha e escrito DOIS pedidos ao
+// Sheets depois; o lock do script não exclui o dono a mexer na aba à mão, e o
+// guia mandava-o ordenar pela coluna `data` como gesto normal do dia a dia.
+// Verificado: com o plano em índices nus, uma ordenação nessa janela marcava
+// `expirado` numa reserva VIVA e o lugar dela era vendido outra vez — o dano
+// exacto que este ficheiro inteiro existe para impedir.
 function planoReconciliacao_(reservas, agoraMs, janelaMs) {
   var expirar = [];
   for (var i = 1; i < (reservas || []).length; i++) {
@@ -389,7 +412,7 @@ function planoReconciliacao_(reservas, agoraMs, janelaMs) {
     if (!isFinite(criado)) continue;
     if (agoraMs - criado <= janelaMs) continue;
 
-    expirar.push(i);
+    expirar.push({ indice: i, token: tokenDaLinha_(l) });
   }
   return expirar;
 }
@@ -484,11 +507,16 @@ function reconciliar_(io, excluirIndice) {
 
   var plano = [];
   for (var i = 0; i < bruto.length; i++) {
-    if (bruto[i] !== excluirIndice) plano.push(bruto[i]);
+    if (bruto[i].indice !== excluirIndice) plano.push(bruto[i]);
   }
   if (!plano.length) return 0;
 
   io.expirar(plano);
+  // Quantas linhas se PLANEOU expirar, como no espelharRespostas_: o io ainda
+  // pode saltar alguma na reconfirmação (e diz no registo que saltou), e a
+  // passagem seguinte trata dela com índices frescos. O número serve aos
+  // chamadores só para decidirem se vale a pena reler a folha, e reler a mais
+  // não faz mal a ninguém.
   return plano.length;
 }
 
@@ -797,8 +825,9 @@ function confirmarWebhook_(params, io) {
     return { ok: true, confirmado: false, motivo: "submissao_repetida" };
   }
 
+  var reservas = io.lerReservas();
   var indice = maisAntigaActiva_(
-    io.lerReservas(), dados.data, dados.horario, io.agora(), JANELA_ORFAS_MS);
+    reservas, dados.data, dados.horario, io.agora(), JANELA_ORFAS_MS);
   if (indice < 0) {
     console.log("Webhook sem linha activa para " + dados.data + " | " +
       dados.horario + ": nada confirmado e nada criado. Ou a reconciliação " +
@@ -812,7 +841,30 @@ function confirmarWebhook_(params, io) {
   // simplesmente nunca aparece ao lado do menu do hóspede — não se inventa
   // uma correspondência por data e horário, que casaria a reserva de um
   // hóspede com a submissão de outro no mesmo slot.
-  io.confirmar(indice, dados.quarto, dados.nome, submissao);
+  //
+  // Vai com o `token` da linha escolhida, para o io a RECONFIRMAR antes de
+  // lhe escrever: entre esta leitura e a escrita há dois pedidos ao Sheets, e
+  // o dono a ordenar a aba nessa janela punha o quarto e o nome deste hóspede
+  // na linha de OUTRO — e a linha verdadeira, deixada `activo`, era expirada
+  // 20 minutos depois. Verificado antes desta guarda existir.
+  var alvo = { indice: indice, token: tokenDaLinha_(reservas[indice]) };
+  if (!io.confirmar(alvo, dados.quarto, dados.nome, submissao)) {
+    // Ao contrário do expirar — cujo salto se cura sozinho na passagem
+    // seguinte —, uma confirmação saltada não se repete: o webhook desta
+    // submissão já veio. Por isso NÃO se grava no anel das já vistas. Se a
+    // JotForm reentregar, a próxima tentativa encontra a linha com números
+    // frescos; gravá-la aqui era recusar essa reentrega como repetida e
+    // perder a confirmação de vez — a linha ficava `activo` e o lugar era
+    // revendido aos 20 minutos.
+    console.log("Confirmação não escrita: a linha escolhida para " +
+      dados.data + " | " + dados.horario + " já não é a que estava lá quando " +
+      "a escolhemos (a aba \"" + ABA_RESERVAS + "\" foi ordenada ou teve " +
+      "linhas apagadas entretanto). Não se escreve às cegas: confirmar a " +
+      "linha errada dava o lugar deste hóspede a outro. Se a JotForm " +
+      "reentregar o webhook, a reserva é confirmada nessa altura; se a linha " +
+      "ficar `activo` durante horas, ponha-a a `confirmado` à mão.");
+    return { ok: true, confirmado: false, motivo: "linha_mudou" };
+  }
   // Só depois de haver mesmo uma linha confirmada: uma entrega que não
   // confirmou nada não gastou nada, e repeti-la não faz mal a ninguém.
   if (submissao && io.gravarSubmissoesVistas) {
@@ -1095,7 +1147,10 @@ function reservar_(pedido, io) {
 
   if (!livre) return { ok: true, reservado: false, motivo: "cheio", restantes: 0 };
 
-  if (existente) io.expirar([existente.indice]);
+  // Com o token, para o io reconfirmar a linha antes de a marcar `expirado`:
+  // é o MESMO token por que o linhaDoToken_ a escolheu, e aqui já está
+  // normalizado pelo validarPedido_.
+  if (existente) io.expirar([{ indice: existente.indice, token: token }]);
   // Oito valores, tantos quantas as colunas do CABECALHO_RESERVAS: o quarto, o
   // nome e a submissão só se sabem na confirmação. Escrever menos valores do
   // que colunas deixaria a coluna nova sem célula nenhuma, e um getValues()
@@ -1124,6 +1179,25 @@ function lerTudo_(nome) {
   var colunas = aba.getLastColumn();
   if (ultima < 1 || colunas < 1) return [];
   return aba.getRange(1, 1, ultima, colunas).getValues();
+}
+
+// A linha `linha` (1-based, da folha) ainda é a que tem este token?
+//
+// É a reconfirmação que o espelho já fazia na aba das respostas, trazida para
+// a aba `Reservas`, onde custa mais caro. Tanto o plano da reconciliação como
+// a linha que o webhook confirma são números de linha lidos DOIS pedidos ao
+// Sheets antes da escrita, e o lock do script não exclui uma pessoa a editar
+// a folha à mão. Se o dono ordenar ou apagar linhas nessa janela, a
+// coordenada passa a apontar para a reserva de OUTRO hóspede: o `expirado`
+// caía numa reserva viva (e o lugar era vendido outra vez) e a confirmação
+// caía na linha errada. Reler o token e comparar é o que impede as duas
+// coisas; se não casar, salta-se.
+//
+// A comparação usa o normalizarToken_, a mesma regra por que a linha foi
+// escolhida (ver tokenDaLinha_) — se divergissem, isto recusava sempre e nada
+// era escrito.
+function linhaAindaEDoToken_(aba, linha, token) {
+  return normalizarToken_(aba.getRange(linha, COL_TOKEN + 1).getValue()) === token;
 }
 
 function propriedade_(chave) {
@@ -1198,17 +1272,47 @@ function ioReal_() {
       // impedir.
       SpreadsheetApp.flush();
     },
-    expirar: function (indices) {
+    // O `plano` são entradas {indice, token}, e não índices nus. O token é o
+    // que torna esta escrita segura: ver expirar_/confirmar_ abaixo.
+    expirar: function (plano) {
       var aba = folha_(ABA_RESERVAS, true);
-      for (var i = 0; i < indices.length; i++) {
+      var escritas = 0;
+      var saltadas = 0;
+      for (var i = 0; i < plano.length; i++) {
         // +1 porque as linhas da folha são 1-based e o índice inclui o cabeçalho.
-        aba.getRange(indices[i] + 1, COL_ESTADO + 1).setValue(ESTADO_EXPIRADO);
+        if (!linhaAindaEDoToken_(aba, plano[i].indice + 1, plano[i].token)) {
+          saltadas++;
+          continue;
+        }
+        aba.getRange(plano[i].indice + 1, COL_ESTADO + 1).setValue(ESTADO_EXPIRADO);
+        escritas++;
       }
-      SpreadsheetApp.flush();
+      if (saltadas) {
+        // NUNCA em silêncio: neste projeto um caminho que não escreve e não se
+        // queixa é a assinatura da avaria que custou um dia. E nunca com o
+        // token no registo — quem o soubesse podia mover a reserva daquele
+        // hóspede pelo endereço público do doPost.
+        console.log("Reconciliação: " + saltadas + " linha(s) não foram " +
+          "libertadas porque já não são as que o plano escolheu — a aba \"" +
+          ABA_RESERVAS + "\" foi ordenada ou teve linhas apagadas entre a " +
+          "leitura e a escrita. Escrever às cegas marcava `expirado` numa " +
+          "reserva viva e o lugar dela era vendido outra vez. A passagem " +
+          "seguinte trata delas com números de linha frescos.");
+      }
+      if (escritas) SpreadsheetApp.flush();
     },
-    confirmar: function (indice, quarto, nome, submissao) {
+    // Devolve `true` se escreveu mesmo. Ao contrário do expirar, aqui a
+    // resposta importa ao chamador: uma confirmação saltada não se cura na
+    // passagem seguinte, e o confirmarWebhook_ precisa de saber para não
+    // gravar esta submissão no anel das já vistas (ver lá).
+    confirmar: function (alvo, quarto, nome, submissao) {
       var aba = folha_(ABA_RESERVAS, true);
-      var linha = indice + 1;
+      var linha = alvo.indice + 1;
+      // A MESMA reconfirmação do expirar, e pela mesma razão: entre a escolha
+      // da linha (no confirmarWebhook_) e esta escrita há dois pedidos ao
+      // Sheets, e o lock do script não exclui o dono a mexer na aba à mão.
+      if (!linhaAindaEDoToken_(aba, linha, alvo.token)) return false;
+
       // O ESTADO primeiro, o quarto, o nome e a submissão depois. É o estado
       // que protege o lugar de ser libertado pela reconciliação: se a escrita
       // falhar a meio, mais vale um lugar protegido sem nome do que um nome
@@ -1218,6 +1322,7 @@ function ioReal_() {
       aba.getRange(linha, COL_NOME + 1).setValue(nome);
       aba.getRange(linha, COL_SUBMISSAO + 1).setValue(submissao == null ? "" : submissao);
       SpreadsheetApp.flush();
+      return true;
     },
     segredo: function () { return propriedade_(CHAVE_SEGREDO); },
     formIdEsperado: function () { return propriedade_(CHAVE_FORM_ID); },
