@@ -95,6 +95,28 @@ test("o widget subscreve o ready e o submit", () => {
   assert.equal(typeof jf.subs.submit, "function");
 });
 
+test("mudar de data limpa também a resposta do widget no JotForm", async () => {
+  // Mesmo cuidado do ramo "cheio": limpar só a variável `value` local e
+  // deixar a escolha anterior presa em q137_typeA137 (via sendData) seria uma
+  // reserva fantasma no campo que o webhook lê.
+  const { widget, documento, jf } = montar({
+    fetch: fetchFalso({ get: async () => resposta({ ok: true, slots: SLOTS_EXEMPLO }) })
+  });
+
+  widget.selecionar("2026-09-08", "08:00-08:45");
+  jf.chamadas.length = 0;
+
+  const campo = documento.getElementById("datePicker");
+  campo.value = "2026-09-09";
+  campo.disparar("change");
+
+  assert.deepEqual(
+    jf.chamadas.filter(c => c[0] === "sendData"),
+    [["sendData", ""]]
+  );
+  assert.equal(widget.valorEscolhido(), "");
+});
+
 test("o widget arranca na mesma sem o JFCustomWidget", () => {
   const { widget, documento } = carregarWidget(CAMINHO);
   assert.equal(documento.getElementById("datePicker").min.length, 10);
@@ -166,7 +188,7 @@ test("carregarSlots dá um botão a cada horário com vagas e texto simples aos 
   assert.equal(documento.getElementById("slots").hidden, false);
   assert.deepEqual(
     lista.querySelectorAll("button").map(b => b.textContent),
-    ["08:00-08:45 (1 vagas)", "09:30-10:15 (3 vagas)"]
+    ["08:00-08:45 (1 vaga)", "09:30-10:15 (3 vagas)"]
   );
   assert.deepEqual(
     lista.querySelectorAll("p").map(p => p.textContent),
@@ -216,6 +238,66 @@ test("uma resposta velha não desenha por cima da mais recente", async () => {
 
   botoes[0].disparar("click");
   assert.equal(widget.valorEscolhido(), "2026-09-10 | 08:00-08:45");
+});
+
+test("um erro de uma geração antiga não apaga os botões de uma geração mais recente", async () => {
+  // Espelho do teste acima, mas para o ramo de ERRO do catch: se a guarda de
+  // geração ali dentro fosse apagada, um pedido mais lento (e mais velho) que
+  // falhasse DEPOIS de a geração nova já ter desenhado os botões substituía-os
+  // por "Erro ao carregar vagas", apesar de o hóspede já estar a ver horários
+  // válidos e atuais.
+  const porResolver = [];
+  const { widget, documento } = montar({
+    fetch: (url) => new Promise((res, rej) => {
+      const data = String(url).split("data=")[1];
+      porResolver.push({ res, rej, data });
+    })
+  });
+
+  const velha = widget.carregarSlots("2026-09-09");
+  const nova = widget.carregarSlots("2026-09-10");
+
+  // a nova responde bem primeiro
+  porResolver[1].res(resposta({ ok: true, slots: SLOTS_EXEMPLO }));
+  await nova;
+
+  const lista = documento.getElementById("slotsList");
+  const botoesAntes = lista.querySelectorAll("button").map(b => b.textContent);
+  assert.ok(botoesAntes.length > 0);
+
+  // só depois a velha falha
+  porResolver[0].rej(new Error("rede em baixo"));
+  await velha;
+
+  assert.deepEqual(
+    lista.querySelectorAll("button").map(b => b.textContent),
+    botoesAntes
+  );
+  assert.notEqual(lista.textContent, "Erro ao carregar vagas. Tente novamente.");
+});
+
+test("desenharBotoes usa singular só na última vaga", async () => {
+  // "1 vagas" é português errado, e é o estado mais visto de todos: aparece
+  // sempre no último lugar de cada horário, logo antes de passar a "Sem
+  // vagas".
+  const { widget, documento } = montar({
+    fetch: fetchFalso({
+      get: async () => resposta({
+        ok: true,
+        slots: [
+          { horario: "08:00-08:45", capacidade: 3, restantes: 1 },
+          { horario: "09:30-10:15", capacidade: 3, restantes: 2 }
+        ]
+      })
+    })
+  });
+
+  await widget.carregarSlots("2026-09-08");
+
+  assert.deepEqual(
+    documento.getElementById("slotsList").querySelectorAll("button").map(b => b.textContent),
+    ["08:00-08:45 (1 vaga)", "09:30-10:15 (2 vagas)"]
+  );
 });
 
 // ===============================
@@ -421,6 +503,25 @@ test("um horário que ficou cheio recusa, limpa a escolha e recarrega os horári
   assert.ok(
     fetchStub.pedidos.some(p => String(p.url).indexOf("?data=2026-09-08") >= 0),
     "devia ter recarregado os horários do dia"
+  );
+});
+
+test("um horário que ficou cheio limpa também a resposta do widget no JotForm", async () => {
+  // Não basta apagar a variável local `value`: sem limpar sendData, a
+  // reserva recusada continuava presa em q137_typeA137, que é o campo que o
+  // webhook lê. Inofensivo só enquanto OBRIGATORIO impedir submeter em
+  // branco — o dia em que isso mudar, isto seria uma confirmação fantasma.
+  const fetchStub = fetchFalso({
+    get: async () => resposta({ ok: true, slots: SLOTS_EXEMPLO }),
+    post: async () => resposta({ ok: true, reservado: false, motivo: "cheio", restantes: 0 })
+  });
+  const { widget, jf } = comEscolha({ fetch: fetchStub });
+
+  await widget.tratarSubmit();
+
+  assert.deepEqual(
+    jf.chamadas.filter(c => c[0] === "sendData"),
+    [["sendData", ""]]
   );
 });
 

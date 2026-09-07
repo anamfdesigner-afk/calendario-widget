@@ -19,12 +19,18 @@ const OBRIGATORIO = true;
 
 // Orçamento de CADA tentativa de reservar.
 //
-// ATENÇÃO: acoplado ao ESPERA_LOCK_MS do reservas.gs (3500 ms de espera pelo
-// mutex), que está deliberadamente DENTRO deste orçamento. Se este número
-// descer abaixo do do servidor, o widget desiste enquanto o servidor ainda
-// está a escrever a linha: o hóspede é informado de que a reserva falhou e o
-// lugar fica na folha na mesma, como ocupação fantasma até a reconciliação o
-// libertar. Não mexer num sem mexer no outro.
+// ATENÇÃO: este número tem de cobrir a espera pelo mutex do reservas.gs
+// (ESPERA_LOCK_MS, 3500 ms) MAIS as idas e vindas à folha que vêm depois de o
+// obter — só ser maior do que os 3500 não chega, porque um pedido que espere
+// perto disso pelo mutex fica com pouca margem para o resto. Descer este
+// número abaixo do do servidor é claramente pior, mas nem essa comparação
+// sozinha garante que sobra tempo suficiente.
+//
+// O que torna isto seguro de facto é a IDEMPOTÊNCIA pelo token: se a
+// tentativa 1 esgotar o prazo enquanto o servidor ainda está a escrever a
+// linha, a tentativa 2 encontra a linha do mesmo token, devolve "repetido" e
+// não gasta um segundo lugar (ver reservarLugar). Não mexer num destes
+// números sem verificar o outro.
 const ORCAMENTO_RESERVA_MS = 5000;
 
 // Painel de diagnóstico. Fica DESLIGADO para quem preenche o formulário
@@ -231,10 +237,14 @@ function selecionar(date, slot) {
 function desenharBotoes() {
   slotsList.querySelectorAll("button").forEach(btn => {
     const ativo = formatarValor(datePicker.value, btn.dataset.slot) === value;
+    // Singular na última vaga: é o estado mais visto de todos, por ser o que
+    // antecede "Sem vagas" em cada horário.
+    const restantes = Number(btn.dataset.restantes);
+    const textoVagas = restantes === 1 ? "1 vaga" : `${btn.dataset.restantes} vagas`;
 
     btn.textContent = ativo
       ? `✔ ${btn.dataset.slot} — SELECIONADO`
-      : `${btn.dataset.slot} (${btn.dataset.restantes} vagas)`;
+      : `${btn.dataset.slot} (${textoVagas})`;
 
     btn.classList.toggle("selecionado", ativo);
     btn.setAttribute("aria-pressed", ativo ? "true" : "false");
@@ -257,6 +267,10 @@ function iniciarUI() {
 
   datePicker.addEventListener("change", () => {
     value = ""; // mudar de dia limpa a escolha
+    // Limpa também a resposta do widget no JotForm, não só a variável local:
+    // sem isto, a última escolha enviada por sendData ficava presa em
+    // q137_typeA137, que é o campo que o webhook lê.
+    if (temJF) JFCustomWidget.sendData({ value: "" });
     carregarSlots(datePicker.value);
   });
 
@@ -368,6 +382,10 @@ async function tratarSubmit() {
   if (r && r.ok === true && r.motivo === "cheio") {
     log(`RECUSADO: ${slotEscolhido} ficou sem vagas entre a escolha e a submissão.`);
     value = "";
+    // Limpa também a resposta do widget no JotForm (ver o mesmo cuidado no
+    // "change" do datePicker): sem isto o q137_typeA137 ficava com a reserva
+    // recusada, inofensivo só enquanto OBRIGATORIO obrigar a escolher outra.
+    if (temJF) JFCustomWidget.sendData({ value: "" });
     desenharBotoes();
     carregarSlots(dataEscolhida);
     JFCustomWidget.showWidgetError(
