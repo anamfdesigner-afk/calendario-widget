@@ -95,6 +95,9 @@ Na aba **Form responses**:
 
 - ❌ não escreva na coluna `typeA137` — é o programa que a preenche
 - ❌ não lhe mude o título, nem o do `Submission ID`
+- ❌ **não ordene nem apague linhas** — nesta aba as linhas têm de ficar pela
+  ordem em que chegaram. Para ver as respostas por outra ordem, use um filtro
+  ou uma cópia da aba.
 
 O programa procura estas duas colunas pelo título. Se algum mudar, a reserva
 deixa de aparecer nessa aba (as reservas e os lugares continuam bem).

@@ -918,6 +918,13 @@ function temSubmissaoGuardada_(reservas) {
 // o que o getRange quer. A aritmética 0-based→1-based fica TODA dentro desta
 // função pura, coberta por testes, em vez de espalhada pelo io: um deslize de
 // um escreve a reserva por cima da resposta de um hóspede.
+//
+// Cada entrada leva também a `colunaId` e o `id` que a escolheu, para o
+// escreverRespostas poder RECONFIRMAR a linha antes de lhe tocar. Sem isso, a
+// escrita confiava em números de linha lidos momentos antes: bastava o dono
+// ordenar ou apagar uma linha nessa janela — e o guia ensina ordenar como
+// gesto normal do dia a dia — para a reserva de um hóspede ir parar à linha de
+// outro.
 function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
   var plano = [];
   if (idxId < 0 || idxDestino < 0) return plano;
@@ -944,7 +951,13 @@ function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
     if (!chave) continue;
     if (!Object.prototype.hasOwnProperty.call(porId, chave)) continue;
 
-    plano.push({ linha: i + 1, coluna: idxDestino + 1, valor: porId[chave] });
+    plano.push({
+      linha: i + 1,
+      coluna: idxDestino + 1,
+      colunaId: idxId + 1,
+      id: chave,
+      valor: porId[chave]
+    });
   }
   return plano;
 }
@@ -952,7 +965,8 @@ function planoRespostas_(submissoes, reservas, idxId, idxDestino) {
 // Ponto de entrada único do espelho, partilhado pelo webhook e pelo GET — pela
 // mesma razão do reconciliar_: duas cópias das guardas acabam por divergir, e
 // fechar um buraco numa delas deixa-o aberto na outra. Devolve quantas células
-// escreveu.
+// PLANEOU escrever — o escreverRespostas ainda pode saltar alguma na
+// reconfirmação, e a passagem seguinte do GET volta a tratar dela.
 function espelharRespostas_(io, reservas) {
   if (!io.lerRespostas || !io.escreverRespostas) return 0;
 
@@ -1082,14 +1096,33 @@ function ioReal_() {
       // ficava com duas abas de respostas e nenhuma completa.
       var aba = folha_(ABA_RESPOSTAS, false);
       if (!aba) return;
+      var escritas = 0;
       for (var i = 0; i < plano.length; i++) {
+        var p = plano[i];
+        // RECONFIRMAR a linha antes de lhe tocar. O plano traz números de
+        // linha lidos momentos antes, e isto corre sem lock de propósito (ver
+        // o doGet). A integração do JotForm só acrescenta linhas ao fim, mas o
+        // dono não: se ele ordenar ou apagar uma linha nesta janela, a
+        // coordenada passa a apontar para a resposta de OUTRO hóspede. Reler o
+        // id e comparar é o que impede a reserva de um ir para a linha do
+        // outro; se não casar, salta-se e a passagem seguinte do GET trata
+        // dela com números de linha frescos.
+        if (normalizarId_(aba.getRange(p.linha, p.colunaId).getValue()) !== p.id) continue;
+
+        // E reler o destino, pela mesma razão: entre o plano e a escrita
+        // alguém pode ter escrito ali à mão, e uma correcção do dono nunca
+        // pode ser apagada por nós.
+        var destino = aba.getRange(p.linha, p.coluna);
+        if (String(destino.getValue() == null ? "" : destino.getValue()).trim()) continue;
+
         // Célula a célula, com as coordenadas que o planoRespostas_ já
         // calculou. Nunca insertRow, deleteRow, insertColumn nem um setValues
         // sobre um intervalo: esta aba é da integração do JotForm e a única
         // coisa que aqui fazemos é preencher células vazias de uma coluna.
-        aba.getRange(plano[i].linha, plano[i].coluna).setValue(plano[i].valor);
+        destino.setValue(p.valor);
+        escritas++;
       }
-      SpreadsheetApp.flush();
+      if (escritas) SpreadsheetApp.flush();
     },
     acrescentar: function (linha) {
       var aba = folha_(ABA_RESERVAS, true);

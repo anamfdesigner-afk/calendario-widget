@@ -1666,7 +1666,7 @@ test("planoRespostas_ aponta para a linha e a coluna certas da folha (1-based)",
 
   assert.deepEqual(
     gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
-    [{ linha: 3, coluna: 4, valor: "2026-09-08 | 08:45-09:30" }]
+    [{ linha: 3, coluna: 4, colunaId: 22, id: ID_ANA, valor: "2026-09-08 | 08:45-09:30" }]
   );
 });
 
@@ -1687,7 +1687,7 @@ test("planoRespostas_ preenche só células vazias", () => {
   ]);
   assert.deepEqual(
     gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
-    [{ linha: 3, coluna: 4, valor: "2026-09-08 | 08:00-08:45" }],
+    [{ linha: 3, coluna: 4, colunaId: 22, id: ID_RUI, valor: "2026-09-08 | 08:00-08:45" }],
     "a de espaços em branco conta como vazia; a escrita fica intacta"
   );
 });
@@ -1699,7 +1699,7 @@ test("planoRespostas_ casa um id de 19 dígitos sem perder o último", () => {
   const submissoes = respostasFalsas([{ id: ID_RUI }]);
   assert.deepEqual(
     gs.planoRespostas_(submissoes, reservasComSubmissao(), IDX_ID, IDX_DESTINO),
-    [{ linha: 2, coluna: 4, valor: "2026-09-08 | 08:00-08:45" }],
+    [{ linha: 2, coluna: 4, colunaId: 22, id: ID_RUI, valor: "2026-09-08 | 08:00-08:45" }],
     "a linha do Rui recebe a reserva do Rui"
   );
 });
@@ -1736,7 +1736,10 @@ test("planoRespostas_ casa o mesmo id quando as duas células vêm como número"
 
   assert.deepEqual(
     gs.planoRespostas_(submissoes, reservas, IDX_ID, IDX_DESTINO),
-    [{ linha: 2, coluna: 4, valor: "2026-09-08 | 08:45-09:30" }]
+    [{
+      linha: 2, coluna: 4, colunaId: 22,
+      id: gs.normalizarId_(numero), valor: "2026-09-08 | 08:45-09:30"
+    }]
   );
 });
 
@@ -2595,10 +2598,17 @@ test("ioReal_.escreverRespostas escreve célula a célula e não mexe em mais na
   // linhas ou colunas, nunca escrever noutra coluna.
   const chamadas = { getRange: [], escritas: [] };
   const proibido = nome => () => { throw new Error("escreverRespostas chamou " + nome); };
+  // As duas linhas ainda estão onde o plano as deixou, e o destino continua
+  // vazio: as duas reconfirmações passam.
+  const celulas = { "3|22": ID_ANA, "9|22": ID_RUI };
   const folhaFalsa = {
     getRange: (linha, coluna) => {
       chamadas.getRange.push([linha, coluna]);
-      return { setValue: v => { chamadas.escritas.push(v); } };
+      const chave = linha + "|" + coluna;
+      return {
+        getValue: () => (chave in celulas ? celulas[chave] : ""),
+        setValue: v => { chamadas.escritas.push(v); }
+      };
     },
     appendRow: proibido("appendRow"),
     deleteRow: proibido("deleteRow"),
@@ -2612,16 +2622,71 @@ test("ioReal_.escreverRespostas escreve célula a célula e não mexe em mais na
   });
 
   gsComStub.ioReal_().escreverRespostas([
-    { linha: 3, coluna: 4, valor: "2026-09-08 | 08:45-09:30" },
-    { linha: 9, coluna: 4, valor: "2026-09-09 | 08:00-08:45" }
+    { linha: 3, coluna: 4, colunaId: 22, id: ID_ANA, valor: "2026-09-08 | 08:45-09:30" },
+    { linha: 9, coluna: 4, colunaId: 22, id: ID_RUI, valor: "2026-09-09 | 08:00-08:45" }
   ]);
 
   // As coordenadas vêm do plano tal como estão: o io não faz aritmética
-  // nenhuma, e por isso não pode enganar-se num índice.
-  assert.deepEqual(chamadas.getRange, [[3, 4], [9, 4]]);
+  // nenhuma, e por isso não pode enganar-se num índice. Por cada entrada, uma
+  // leitura do id e uma única célula de destino, lida e escrita.
+  assert.deepEqual(chamadas.getRange, [[3, 22], [3, 4], [9, 22], [9, 4]]);
   assert.deepEqual(chamadas.escritas,
     ["2026-09-08 | 08:45-09:30", "2026-09-09 | 08:00-08:45"]);
   assert.equal(flushes, 1);
+});
+
+test("o dono ordenou as linhas entre o plano e a escrita: não se escreve na linha errada", () => {
+  // O plano é calculado sobre números de linha lidos momentos antes, e a
+  // escrita corre SEM lock (de propósito: ver o doGet). A integração do
+  // JotForm só acrescenta linhas ao fim, mas o dono não — o guia ensina
+  // ordenar como gesto normal do dia a dia. Se ele ordenar ou apagar uma linha
+  // dentro dessa janela, a escrita cairia na linha de OUTRO hóspede.
+  const livro = livroFalso({
+    "Form responses": respostasFalsas([
+      { nome: "Ana", id: ID_ANA },
+      { nome: "Rui", id: ID_RUI }
+    ])
+  });
+  const gsComStub = carregarCom(livro.stubs);
+  const respostas = livro.folhas["Form responses"].dados;
+
+  const plano = gsComStub.planoRespostas_(
+    respostas, reservasComSubmissao(), IDX_ID, IDX_DESTINO);
+  assert.equal(plano.length, 2, "as duas linhas entram no plano");
+
+  // E agora o dono ordena a aba: a Ana e o Rui trocam de linha.
+  const trocada = respostas[1];
+  respostas[1] = respostas[2];
+  respostas[2] = trocada;
+
+  gsComStub.ioReal_().escreverRespostas(plano);
+
+  assert.equal(respostas[1][IDX_DESTINO], "", "a linha do Rui não recebe a reserva da Ana");
+  assert.equal(respostas[2][IDX_DESTINO], "", "nem a da Ana a do Rui");
+});
+
+test("uma célula de destino que ganhou valor entre o plano e a escrita fica intacta", () => {
+  // A mesma janela, o outro lado: o `planoRespostas_` só escolhe células
+  // vazias, mas entre o plano e a escrita alguém pode ter escrito ali à mão —
+  // e uma correcção do dono nunca pode ser apagada por nós.
+  const livro = livroFalso({
+    "Form responses": respostasFalsas([
+      { nome: "Ana", id: ID_ANA },
+      { nome: "Rui", id: ID_RUI }
+    ])
+  });
+  const gsComStub = carregarCom(livro.stubs);
+  const respostas = livro.folhas["Form responses"].dados;
+
+  const plano = gsComStub.planoRespostas_(
+    respostas, reservasComSubmissao(), IDX_ID, IDX_DESTINO);
+  respostas[1][IDX_DESTINO] = "escrito à mão";
+
+  gsComStub.ioReal_().escreverRespostas(plano);
+
+  assert.equal(respostas[1][IDX_DESTINO], "escrito à mão");
+  assert.equal(respostas[2][IDX_DESTINO], "2026-09-08 | 08:00-08:45",
+    "e a outra linha é escrita na mesma");
 });
 
 test("ioReal_.escreverRespostas não cria a aba das respostas quando ela não existe", () => {
