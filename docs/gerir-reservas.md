@@ -62,8 +62,13 @@ visitas, avise-me.
 
 Pronto. O lugar fica livre para outro hóspede logo a seguir.
 
-**É esta a única célula que pode alterar à mão.** A linha não se apaga: fica lá como registo
-do que aconteceu.
+**Uma coisa a saber:** se essa reserva já tinha aparecido na coluna `typeA137` da aba
+**Form responses**, esse texto fica lá — o programa só preenche células vazias, nunca as
+limpa. Não é engano nem lugar ocupado: **quem manda é a aba `Reservas`**, e lá a linha
+está `expirado`. Se quiser que essa célula fique limpa, diga-me.
+
+**Na aba `Reservas`, é esta a única célula que pode alterar à mão.** A linha não se
+apaga: fica lá como registo do que aconteceu.
 
 ---
 
