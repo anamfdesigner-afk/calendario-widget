@@ -740,7 +740,13 @@ function doPost(e) {
   } catch (err) {
     return resposta_({ ok: false, erro: "corpo_invalido" });
   }
-  if (pedido.acao !== "reservar") return resposta_({ ok: false, erro: "acao_desconhecida" });
+  // O !pedido não é zelo a mais: JSON.parse("null") tem SUCESSO, e o
+  // pedido.acao aqui — já fora do try — levantava um TypeError. O Apps
+  // Script respondia com uma página HTML de erro em vez de JSON, e o widget
+  // não sabe ler isso. Vale o mesmo para "123" ou "\"texto\"".
+  if (!pedido || pedido.acao !== "reservar") {
+    return resposta_({ ok: false, erro: "acao_desconhecida" });
+  }
 
   var lock = LockService.getScriptLock();
   // É este mutex que torna impossível duas submissões simultâneas
@@ -839,6 +845,9 @@ if (typeof module !== "undefined") {
     reservar_: reservar_,
     preparar: preparar,
     doGet: doGet,
+    doPost: doPost,
+    limparTestes: limparTestes,
+    semear: semear,
     // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
     // testes de unidade. É exportada mesmo assim para pinar, com uma folha
     // e um SpreadsheetApp esboçados, a aritmética de índices e as chamadas

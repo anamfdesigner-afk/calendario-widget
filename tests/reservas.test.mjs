@@ -657,7 +657,11 @@ function livroFalso(abas = {}, opcoes = {}) {
       getLastColumn: () => dados.reduce((m, l) => Math.max(m, l.length), 0),
       // As folhas reais nascem com 1000 linhas, muitas delas vazias.
       getMaxRows: () => Math.max(dados.length, 1000),
-      getRange: (linha, coluna, nLinhas = 1, nColunas = 1) => ({
+      getRange: (linha, coluna, nLinhas = 1, nColunas = 1) => {
+        // Permite pôr uma aba a falhar, para provar que o lock é largado
+        // mesmo quando o reservar_ estoura a meio.
+        if (opcoes.abaExplosiva === nome) throw new Error("folha em chamas");
+        return ({
         getValues: () => {
           const out = [];
           for (let r = linha - 1; r < linha - 1 + nLinhas; r++) {
@@ -675,7 +679,8 @@ function livroFalso(abas = {}, opcoes = {}) {
           dados[linha - 1][coluna - 1] = v;
         },
         setNumberFormat: f => { formatos.push({ aba: nome, coluna, formato: f }); }
-      }),
+        });
+      },
       appendRow: l => { dados.push(l.slice()); },
       deleteRow: r => { dados.splice(r - 1, 1); }
     };
@@ -946,6 +951,143 @@ test("doGet rejeita uma data inválida sem tocar na folha", () => {
   });
   assert.deepEqual(corpo(gsComStub.doGet({})), { ok: false, erro: "data_invalida" });
   assert.deepEqual(livro.chamadas.tryLock, []);
+});
+
+// ===============================
+// A CASCA HTTP (doPost)
+// ===============================
+// É nesta casca que todo o desenho se apoia: o mutex, o release no finally,
+// o salto oportunista quando o tryLock falha e a leitura do corpo.
+
+function post(gsComStub, corpoTexto) {
+  return corpo(gsComStub.doPost({ postData: { contents: corpoTexto } }));
+}
+
+const PEDIDO_TEXTO = JSON.stringify({
+  acao: "reservar", token: "abcd-1234-efgh", data: "2099-01-01", horario: "08:45-09:30"
+});
+
+test("doPost reserva, larga o lock e espera-o só pelo orçamento do cliente", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = post(gsComStub, PEDIDO_TEXTO);
+
+  assert.deepEqual(r, { ok: true, reservado: true, estado: "novo" });
+  // 3500 ms: tem de caber no ORCAMENTO_RESERVA_MS de 5 s do widget, senão
+  // o cliente desiste e o servidor reserva de qualquer modo.
+  assert.deepEqual(livro.chamadas.tryLock, [3500]);
+  assert.equal(livro.chamadas.releaseLock, 1, "o lock tem de ser largado sempre");
+  assert.equal(livro.folhas["Reservas"].dados.length, 2);
+  assert.equal(livro.chamadas.flush, 1);
+});
+
+test("doPost larga o lock mesmo quando o reservar_ estoura", () => {
+  // Um lock retido é pior do que um erro: bloqueia todos os hóspedes
+  // seguintes até o Apps Script o libertar por sua conta.
+  const livro = livroFalso(
+    { Reservas: [CAB], Capacidades: CAPS_FOLHA },
+    { abaExplosiva: "Capacidades" }
+  );
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.deepEqual(post(gsComStub, PEDIDO_TEXTO), { ok: false, erro: "erro_interno" });
+  assert.equal(livro.chamadas.releaseLock, 1);
+});
+
+test("doPost devolve lock_indisponivel quando o tryLock falha", () => {
+  const livro = livroFalso(
+    { Reservas: [CAB], Capacidades: CAPS_FOLHA },
+    { lockIndisponivel: true }
+  );
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.deepEqual(post(gsComStub, PEDIDO_TEXTO), { ok: false, erro: "lock_indisponivel" });
+  // Nada foi escrito, e não se larga um lock que não se tem.
+  assert.equal(livro.folhas["Reservas"].dados.length, 1);
+  assert.equal(livro.chamadas.releaseLock, 0);
+});
+
+test("doPost responde JSON a um corpo de literal null", () => {
+  // O JSON.parse("null") tem sucesso, e o pedido.acao logo a seguir — já
+  // fora do try — levantava um TypeError: o Apps Script devolvia uma
+  // página HTML de erro em vez de JSON, e o widget não sabe ler isso.
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.deepEqual(post(gsComStub, "null"), { ok: false, erro: "acao_desconhecida" });
+  assert.deepEqual(post(gsComStub, "123"), { ok: false, erro: "acao_desconhecida" });
+  assert.deepEqual(livro.chamadas.tryLock, [], "nem vale a pena pegar no lock");
+});
+
+test("doPost trata um corpo ilegível e um corpo ausente", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.deepEqual(post(gsComStub, "{isto não é json"), { ok: false, erro: "corpo_invalido" });
+  // Sem postData nenhum o corpo cai para "{}", que não tem acao.
+  assert.deepEqual(corpo(gsComStub.doPost({})), { ok: false, erro: "acao_desconhecida" });
+  assert.deepEqual(corpo(gsComStub.doPost()), { ok: false, erro: "acao_desconhecida" });
+});
+
+test("doPost propaga a recusa de um slot cheio", () => {
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["x1", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now()), "activo"],
+      ["x2", "2099-01-01", "08:45-09:30", gs.criadoIso_(Date.now()), "activo"]
+    ],
+    Capacidades: CAPS_FOLHA
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.deepEqual(post(gsComStub, PEDIDO_TEXTO), {
+    ok: true, reservado: false, motivo: "cheio", restantes: 0
+  });
+  assert.equal(livro.chamadas.releaseLock, 1);
+});
+
+test("doGet ainda devolve contagens quando não consegue o lock", () => {
+  const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
+  const livro = livroFalso(
+    {
+      Reservas: [
+        CAB,
+        ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo"],
+        ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo"]
+      ],
+      Capacidades: CAPS_FOLHA,
+      "Form responses": LINHAS_COM_RESERVA
+    },
+    { lockIndisponivel: true }
+  );
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+
+  // O slot parece cheio, logo tenta o lock; não o consegue e salta a
+  // reconciliação. As contagens ficam no máximo ligeiramente velhas — a
+  // decisão que conta é sempre a do POST, dentro do lock.
+  assert.deepEqual(livro.chamadas.tryLock, [5000]);
+  assert.equal(livro.chamadas.releaseLock, 0);
+  assert.equal(r.ok, true);
+  assert.equal(r.slots[1].restantes, 0);
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "activo");
+});
+
+test("doGet devolve capacidades_ilegiveis quando a aba não se lê", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: [["horario", "vagas"]] });
+  const gsComStub = carregarCom(livro.stubs);
+  assert.deepEqual(corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } })), {
+    ok: false, erro: "capacidades_ilegiveis"
+  });
+});
+
+test("a resposta sai marcada como JSON", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+  const resposta = gsComStub.doGet({ parameter: { data: "2099-01-01" } });
+  assert.equal(resposta.mime, "application/json");
 });
 
 // ===============================
