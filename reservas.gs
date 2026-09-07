@@ -37,7 +37,15 @@ var FORMATO_HORARIO = /^\d{2}:\d{2}-\d{2}:\d{2}$/;
 var CHAVE_MARCA = "marcaSubmissoes";
 
 var JANELA_ORFAS_MS = 20 * 60 * 1000;
-var ESPERA_LOCK_MS = 20000;
+
+// ATENÇÃO: acoplado ao ORCAMENTO_RESERVA_MS do widget.js (5 s por
+// tentativa). Tem de ficar CONFORTAVELMENTE DENTRO desse orçamento. Com os
+// 20 s que aqui estavam, sob contenção o widget desistia e falhava fechado
+// — o hóspede era informado de que a reserva falhou — e o servidor tomava
+// o lugar logo depois: o lugar ficava como ocupação fantasma durante 20
+// minutos. Não mexer num dos dois sem mexer no outro.
+var ESPERA_LOCK_MS = 3500;
+
 var ESPERA_LOCK_GET_MS = 5000;
 
 // ===============================
@@ -142,6 +150,20 @@ function activos_(linhas, data, horario) {
     n++;
   }
   return n;
+}
+
+// Algum slot desta data parece cheio? É o gatilho da reconciliação no GET
+// (ver doGet). Slots de capacidade 0 (horário fechado pelo dono) ficam de
+// fora: 0 activos já é "cheio" por >=, e sem esta guarda um único horário
+// fechado punha a reconciliação a correr em TODOS os GET, que é
+// exatamente o custo que se quer evitar. Um horário sem lugares também não
+// tem lugares para libertar.
+function algumSlotCheio_(linhas, data, caps) {
+  for (var i = 0; i < (caps || []).length; i++) {
+    if (caps[i].vagas <= 0) continue;
+    if (activos_(linhas, data, caps[i].horario) >= caps[i].vagas) return true;
+  }
+  return false;
 }
 
 function linhaDoToken_(linhas, token) {
@@ -652,10 +674,11 @@ function resposta_(obj) {
 // ===============================
 // GET: vagas de uma data
 // ===============================
-// É também aqui que a reconciliação corre em regime best-effort. Sem isto,
-// um slot cujos lugares fossem TODOS órfãos apareceria como "Sem vagas",
-// ninguém chegaria a submeter contra ele, e a reconciliação do POST nunca
-// correria: as órfãs ficavam presas para sempre.
+// É também aqui que a reconciliação corre em regime best-effort, e só
+// quando algum slot da data pedida parece cheio. Sem este caminho, um slot
+// cujos lugares fossem TODOS órfãos apareceria como "Sem vagas", ninguém
+// chegaria a submeter contra ele, e a reconciliação do POST nunca correria:
+// as órfãs ficavam presas para sempre.
 function doGet(e) {
   var data = String(((e && e.parameter) || {}).data || "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
@@ -666,19 +689,35 @@ function doGet(e) {
   var caps = capacidades_(io.lerCapacidades());
   if (!caps.length) return resposta_({ ok: false, erro: "capacidades_ilegiveis" });
 
-  var lock = LockService.getScriptLock();
-  if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
-    try {
-      // Ninguém a pedir um lugar: não há linha a proteger.
-      reconciliar_(io, -1);
-    } catch (err) {
-      // Reconciliar é oportunista: falhar aqui não deve impedir o GET.
-    } finally {
-      lock.releaseLock();
+  var linhas = io.lerReservas();
+
+  // Reconciliar custa uma aquisição de lock, um getValues() inteiro da
+  // Form responses e uma regex por célula de todas as colunas. O
+  // <input type="date"> dispara `change` por segmento, logo uma data
+  // escrita à mão faz uns três GET, cada um a serializar atrás dos outros e
+  // atrás de todos os outros hóspedes — e o custo cresce com a folha das
+  // submissões para sempre.
+  //
+  // Por isso só reconciliamos quando algum slot desta data PARECE cheio,
+  // que é exatamente o caso que este caminho existe para fechar: um slot
+  // cujos lugares fossem TODOS órfãos apareceria como "Sem vagas", ninguém
+  // chegaria a submeter contra ele, e a reconciliação do POST nunca
+  // correria. A propriedade de fecho mantém-se intacta; o custo sai do
+  // caminho normal.
+  if (algumSlotCheio_(linhas, data, caps)) {
+    var lock = LockService.getScriptLock();
+    if (lock.tryLock(ESPERA_LOCK_GET_MS)) {
+      try {
+        // Ninguém a pedir um lugar: não há linha a proteger.
+        if (reconciliar_(io, -1)) linhas = io.lerReservas();
+      } catch (err) {
+        // Reconciliar é oportunista: falhar aqui não deve impedir o GET.
+      } finally {
+        lock.releaseLock();
+      }
     }
   }
 
-  var linhas = io.lerReservas();
   var slots = [];
   for (var i = 0; i < caps.length; i++) {
     var usadas = activos_(linhas, data, caps[i].horario);
@@ -782,6 +821,7 @@ if (typeof module !== "undefined") {
     normalizarData_: normalizarData_,
     normalizarReserva_: normalizarReserva_,
     activos_: activos_,
+    algumSlotCheio_: algumSlotCheio_,
     linhaDoToken_: linhaDoToken_,
     validarPedido_: validarPedido_,
     colunaReserva_: colunaReserva_,
@@ -798,6 +838,7 @@ if (typeof module !== "undefined") {
     criadoIso_: criadoIso_,
     reservar_: reservar_,
     preparar: preparar,
+    doGet: doGet,
     // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
     // testes de unidade. É exportada mesmo assim para pinar, com uma folha
     // e um SpreadsheetApp esboçados, a aritmética de índices e as chamadas

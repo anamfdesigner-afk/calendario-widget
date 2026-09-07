@@ -873,6 +873,82 @@ test("preparar() diz NENHUMA quando não encontra aba de respostas", () => {
 });
 
 // ===============================
+// O GET NÃO PODE RECONCILIAR EM TODOS OS PEDIDOS
+// ===============================
+
+function corpo(resposta) {
+  return JSON.parse(resposta.texto);
+}
+
+const CAPS_FOLHA = [["horario", "vagas"], ["08:00-08:45", 3], ["08:45-09:30", 2]];
+
+test("algumSlotCheio_ vê o slot cheio e ignora o horário fechado", () => {
+  const caps = [{ horario: "08:00-08:45", vagas: 1 }, { horario: "08:45-09:30", vagas: 0 }];
+  const vazio = [CAB];
+  // O horário de capacidade 0 tem 0 activos, logo passaria o >= e punha a
+  // reconciliação a correr em todos os GET.
+  assert.equal(gs.algumSlotCheio_(vazio, "2026-09-08", caps), false);
+  const cheio = [CAB, ["t1", "2026-09-08", "08:00-08:45", "x", "activo"]];
+  assert.equal(gs.algumSlotCheio_(cheio, "2026-09-08", caps), true);
+  assert.equal(gs.algumSlotCheio_(cheio, "2026-09-09", caps), false, "só a data pedida");
+});
+
+test("doGet não pega no lock quando nenhum slot da data parece cheio", () => {
+  const livro = livroFalso({
+    Reservas: [CAB],
+    Capacidades: CAPS_FOLHA,
+    "Form responses": LINHAS_COM_RESERVA
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doGet({ parameter: { data: "2026-09-08" } }));
+
+  assert.deepEqual(livro.chamadas.tryLock, [], "reconciliar em cada GET serializa os hóspedes");
+  assert.deepEqual(r.slots, [
+    { horario: "08:00-08:45", capacidade: 3, restantes: 3 },
+    { horario: "08:45-09:30", capacidade: 2, restantes: 2 }
+  ]);
+});
+
+test("doGet reconcilia quando um slot parece cheio, e liberta o lugar órfão", () => {
+  const velhoIso = gs.criadoIso_(Date.now() - 60 * 60 * 1000);
+  const livro = livroFalso({
+    Reservas: [
+      CAB,
+      ["x1", "2099-01-01", "08:45-09:30", velhoIso, "activo"],
+      ["x2", "2099-01-01", "08:45-09:30", velhoIso, "activo"]
+    ],
+    Capacidades: CAPS_FOLHA,
+    // Uma só submissão para duas reservas antigas: uma é órfã. É este o
+    // caso que o caminho do GET existe para fechar — sem ele o slot ficava
+    // "Sem vagas" para sempre e ninguém chegava a submeter contra ele.
+    "Form responses": [
+      ["Submission Date", "Reserva"],
+      ["2099-01-01", "2099-01-01 | 08:45-09:30"]
+    ]
+  });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const r = corpo(gsComStub.doGet({ parameter: { data: "2099-01-01" } }));
+
+  assert.deepEqual(livro.chamadas.tryLock, [5000]);
+  assert.equal(livro.chamadas.releaseLock, 1);
+  assert.equal(livro.folhas["Reservas"].dados[1][4], "expirado");
+  // E as contagens devolvidas já refletem a libertação, no mesmo pedido.
+  assert.equal(r.slots[1].restantes, 1);
+});
+
+test("doGet rejeita uma data inválida sem tocar na folha", () => {
+  const livro = livroFalso({ Reservas: [CAB], Capacidades: CAPS_FOLHA });
+  const gsComStub = carregarCom(livro.stubs);
+  assert.deepEqual(corpo(gsComStub.doGet({ parameter: { data: "8/9/2026" } })), {
+    ok: false, erro: "data_invalida"
+  });
+  assert.deepEqual(corpo(gsComStub.doGet({})), { ok: false, erro: "data_invalida" });
+  assert.deepEqual(livro.chamadas.tryLock, []);
+});
+
+// ===============================
 // ioReal_ (E/S real, com SpreadsheetApp esboçado)
 // ===============================
 // Estes testes carregam o .gs de novo com um SpreadsheetApp falso, porque o
