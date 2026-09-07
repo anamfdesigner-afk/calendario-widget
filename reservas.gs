@@ -9,7 +9,13 @@
 
 var ABA_RESERVAS = "Reservas";
 var ABA_CAPACIDADES = "Capacidades";
+// Nome habitual da aba das submissões. É só o PRIMEIRO palpite: a busca
+// real é tolerante (ver escolherAbaSubmissoes_).
 var ABA_SUBMISSOES = "Form responses";
+
+// Nomes que uma aba de submissões costuma ter em qualquer idioma:
+// "Form responses", "Form Responses 1", "Respostas do formulário".
+var NOME_SUBMISSOES = /form|respost/i;
 
 // Colunas da aba Reservas.
 var COL_TOKEN = 0;
@@ -516,6 +522,61 @@ function reservar_(pedido, io) {
 }
 
 // ===============================
+// QUAL É A ABA DAS SUBMISSÕES
+// ===============================
+// Este ficheiro tem um princípio: procurar a COLUNA `Reserva` de forma
+// tolerante, porque todos os bugs passados deste projeto foram um nome que
+// não casava e falhou em silêncio. O nome da ABA era o único sítio onde
+// esse princípio estava abandonado — uma constante exata.
+//
+// Se a aba não se chamar literalmente "Form responses" (nome traduzido,
+// "Form Responses 1", renomeada pelo dono, recriada pela integração), o
+// lerTudo_ devolvia null e ambos os chamadores leem isso como "não
+// reconciliar". A reconciliação nunca mais correria durante toda a vida da
+// implantação: as órfãs acumulavam-se como ocupação fantasma permanente e
+// hóspedes que pagam veriam "Sem vagas" em slots vazios.
+//
+// `nomes` é a lista de nomes das abas e `ler` devolve as linhas de uma
+// delas — injetados para isto ser testável sem Apps Script.
+function escolherAbaSubmissoes_(nomes, ler) {
+  var candidatos = [];
+  for (var i = 0; i < (nomes || []).length; i++) {
+    var n = String(nomes[i] == null ? "" : nomes[i]);
+    // As nossas duas abas nunca são a das submissões, e a busca por
+    // conteúdo não as pode escolher por acidente.
+    if (n === ABA_RESERVAS || n === ABA_CAPACIDADES) continue;
+    candidatos.push(n);
+  }
+
+  // 1. O nome exato, quando existe.
+  for (var a = 0; a < candidatos.length; a++) {
+    if (candidatos[a] === ABA_SUBMISSOES) return candidatos[a];
+  }
+
+  // 2. Um nome plausível.
+  for (var b = 0; b < candidatos.length; b++) {
+    if (NOME_SUBMISSOES.test(candidatos[b])) return candidatos[b];
+  }
+
+  // 3. Rede de segurança: a aba que tenha uma coluna com reservas legíveis.
+  //    Cobre até uma aba com um nome que não diz nada.
+  for (var c = 0; c < candidatos.length; c++) {
+    if (colunaReserva_(ler(candidatos[c])) >= 0) return candidatos[c];
+  }
+
+  return null;
+}
+
+function nomeAbaSubmissoes_() {
+  var abas = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  var nomes = [];
+  for (var i = 0; i < abas.length; i++) nomes.push(abas[i].getName());
+  return escolherAbaSubmissoes_(nomes, function (nome) {
+    return lerTudo_(nome) || [];
+  });
+}
+
+// ===============================
 // E/S REAL NA FOLHA
 // ===============================
 function folha_(nome, criarSeFaltar) {
@@ -546,7 +607,10 @@ function ioReal_() {
       return (linhas && linhas.length) ? linhas : [CABECALHO_RESERVAS];
     },
     lerCapacidades: function () { return lerTudo_(ABA_CAPACIDADES) || []; },
-    lerSubmissoes: function () { return lerTudo_(ABA_SUBMISSOES); },
+    lerSubmissoes: function () {
+      var nome = nomeAbaSubmissoes_();
+      return nome ? lerTudo_(nome) : null;
+    },
     acrescentar: function (linha) {
       var aba = folha_(ABA_RESERVAS, true);
       // Espelha a guarda de lerReservas: uma aba nova ou esvaziada não tem
@@ -681,7 +745,12 @@ function preparar() {
   // livres e são vendidos outra vez.
   var semeadas = semear_(ioReal_()).semeadas;
 
-  return "Abas prontas. Reservas já existentes trazidas para o registo: " + semeadas;
+  // Devolvemos o nome da aba encontrada para o dono o CONFIRMAR na
+  // instalação. Se sair "NENHUMA", a reconciliação nunca correria e mais
+  // ninguém ficaria a saber.
+  var aba = nomeAbaSubmissoes_();
+  return "Abas prontas. Aba das respostas: " + (aba ? aba : "NENHUMA") +
+    ". Reservas já existentes trazidas para o registo: " + semeadas;
 }
 
 // Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
@@ -721,6 +790,7 @@ if (typeof module !== "undefined") {
     submissoesFiaveis_: submissoesFiaveis_,
     marcaDe_: marcaDe_,
     reconciliar_: reconciliar_,
+    escolherAbaSubmissoes_: escolherAbaSubmissoes_,
     tokenSemeado_: tokenSemeado_,
     tokenExiste_: tokenExiste_,
     planoSemeadura_: planoSemeadura_,

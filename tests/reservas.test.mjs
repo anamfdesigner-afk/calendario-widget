@@ -791,6 +791,88 @@ test("preparar() cria as abas e semeia as capacidades", () => {
 });
 
 // ===============================
+// QUAL É A ABA DAS SUBMISSÕES
+// ===============================
+
+// Data bem no futuro de propósito: o preparar() corre com o Date.now() real
+// (não com o AGORA fixo), e uma data próxima tornava este teste numa bomba
+// de relógio — deixava de semear nada quando passasse.
+const LINHAS_COM_RESERVA = [
+  ["Submission Date", "Email", "Reserva"],
+  ["2099-01-01", "a@b.pt", "2099-01-01 | 08:00-08:45"]
+];
+
+function lerDe(mapa) {
+  return nome => mapa[nome] || [];
+}
+
+test("escolherAbaSubmissoes_ prefere o nome exato", () => {
+  const nomes = ["Reservas", "Capacidades", "Respostas", "Form responses"];
+  assert.equal(gs.escolherAbaSubmissoes_(nomes, lerDe({})), "Form responses");
+});
+
+test("escolherAbaSubmissoes_ aceita nomes traduzidos ou numerados", () => {
+  assert.equal(
+    gs.escolherAbaSubmissoes_(["Reservas", "Form Responses 1"], lerDe({})),
+    "Form Responses 1"
+  );
+  assert.equal(
+    gs.escolherAbaSubmissoes_(["Reservas", "Respostas do formulário"], lerDe({})),
+    "Respostas do formulário"
+  );
+});
+
+test("escolherAbaSubmissoes_ cai para a aba que tem reservas legíveis", () => {
+  // Um nome que não diz nada: só o conteúdo a identifica.
+  const nomes = ["Reservas", "Capacidades", "Folha1"];
+  const ler = lerDe({ Folha1: LINHAS_COM_RESERVA });
+  assert.equal(gs.escolherAbaSubmissoes_(nomes, ler), "Folha1");
+});
+
+test("escolherAbaSubmissoes_ nunca escolhe as nossas próprias abas", () => {
+  // A aba Reservas tem data e horario em colunas separadas, logo nem o
+  // formato completo casa — mas não pode ser candidata de qualquer modo.
+  const ler = lerDe({ Reservas: LINHAS_COM_RESERVA, Capacidades: LINHAS_COM_RESERVA });
+  assert.equal(gs.escolherAbaSubmissoes_(["Reservas", "Capacidades"], ler), null);
+});
+
+test("escolherAbaSubmissoes_ devolve null quando não há nada reconhecível", () => {
+  assert.equal(gs.escolherAbaSubmissoes_(["Folha1"], lerDe({ Folha1: [["a"], ["b"]] })), null);
+  assert.equal(gs.escolherAbaSubmissoes_([], lerDe({})), null);
+  assert.equal(gs.escolherAbaSubmissoes_(null, lerDe({})), null);
+});
+
+test("ioReal_.lerSubmissoes lê uma aba de respostas renomeada", () => {
+  const livro = livroFalso({
+    Reservas: [CAB],
+    Capacidades: [["horario", "vagas"], ["08:00-08:45", 3]],
+    "Respostas ao formulário (1)": LINHAS_COM_RESERVA
+  });
+  const gsComStub = carregarCom(livro.stubs);
+  assert.deepEqual(gsComStub.ioReal_().lerSubmissoes(), LINHAS_COM_RESERVA);
+});
+
+test("ioReal_.lerSubmissoes devolve null quando não existe aba de respostas", () => {
+  const livro = livroFalso({ Reservas: [CAB] });
+  const gsComStub = carregarCom(livro.stubs);
+  assert.equal(gsComStub.ioReal_().lerSubmissoes(), null);
+});
+
+test("preparar() diz qual a aba de respostas que encontrou", () => {
+  const livro = livroFalso({ "Respostas ao formulário": LINHAS_COM_RESERVA });
+  const gsComStub = carregarCom(livro.stubs);
+  const msg = gsComStub.preparar();
+  assert.match(msg, /Respostas ao formulário/);
+  assert.match(msg, /trazidas para o registo: 1/);
+});
+
+test("preparar() diz NENHUMA quando não encontra aba de respostas", () => {
+  const livro = livroFalso({});
+  const gsComStub = carregarCom(livro.stubs);
+  assert.match(gsComStub.preparar(), /Aba das respostas: NENHUMA/);
+});
+
+// ===============================
 // ioReal_ (E/S real, com SpreadsheetApp esboçado)
 // ===============================
 // Estes testes carregam o .gs de novo com um SpreadsheetApp falso, porque o
