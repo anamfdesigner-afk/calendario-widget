@@ -240,7 +240,10 @@ function ioFalso(reservas, opcoes = {}) {
   const estado = {
     reservas: reservas.map(l => l.slice()),
     acrescentadas: [],
-    expiradas: []
+    expiradas: [],
+    // A marca de água das submissões (C2). Zero = nunca registada, que é o
+    // estado de uma instalação antiga; os testes que precisam dela passam-na.
+    marca: opcoes.marca === undefined ? 0 : opcoes.marca
   };
   return {
     estado,
@@ -260,6 +263,8 @@ function ioFalso(reservas, opcoes = {}) {
         estado.expiradas.push(...indices);
         indices.forEach(i => { estado.reservas[i][4] = "expirado"; });
       },
+      marcaSubmissoes: () => estado.marca,
+      gravarMarca: n => { estado.marca = n; },
       agora: () => opcoes.agora || AGORA
     }
   };
@@ -394,6 +399,98 @@ test("reservar_ propaga os erros de validação", () => {
     gs.reservar_({ ...PEDIDO, horario: "23:00-23:45" }, io),
     { ok: false, erro: "horario_desconhecido" }
   );
+});
+
+// ===============================
+// SEMEADURA DAS RESERVAS JÁ EXISTENTES
+// ===============================
+// Na instalação a aba Reservas está vazia, mas a Form responses já tem
+// reservas futuras vendidas a hóspedes reais. Sem as semear, os lugares
+// delas aparecem livres e são vendidos outra vez.
+
+const SUBMISSOES_TRES = [
+  ["Submission Date", "Email", "Reserva"],
+  ["2026-09-01", "a@b.pt", "2026-09-09 | 08:00-08:45"],
+  ["2026-09-02", "c@d.pt", "2026-09-09 | 08:00-08:45"],
+  ["2026-09-03", "e@f.pt", "2026-09-09 | 08:00-08:45"]
+];
+
+const PEDIDO_09 = { token: "abcd-1234-efgh", data: "2026-09-09", horario: "08:00-08:45" };
+
+test("semear_ traz para o registo as reservas futuras já submetidas", () => {
+  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
+  assert.equal(gs.semear_(io).semeadas, 3);
+  assert.equal(gs.activos_(estado.reservas, "2026-09-09", "08:00-08:45"), 3);
+  // Um token determinístico por linha de origem, no formato que o
+  // validarPedido_ aceita.
+  assert.deepEqual(estado.acrescentadas.map(l => l[0]), ["sub-000001", "sub-000002", "sub-000003"]);
+});
+
+test("os três lugares já vendidos não são revendidos depois de semear", () => {
+  const { io } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
+  gs.semear_(io);
+  // Capacidade 3, três reservas reais: o slot está cheio. Sem a semeadura
+  // este pedido devolvia { reservado: true, estado: "novo" } — seis
+  // pequenos-almoços vendidos para três lugares.
+  assert.deepEqual(
+    gs.reservar_(PEDIDO_09, io),
+    { ok: true, reservado: false, motivo: "cheio", restantes: 0 }
+  );
+});
+
+test("semear_ é idempotente: correr preparar() duas vezes não duplica lugares", () => {
+  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
+  gs.semear_(io);
+  assert.equal(gs.semear_(io).semeadas, 0, "a segunda passagem não semeia nada");
+  assert.equal(estado.acrescentadas.length, 3);
+});
+
+test("semear_ não ressuscita uma linha semeada que o dono cancelou à mão", () => {
+  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
+  gs.semear_(io);
+  // O guia autoriza mudar `estado` para `expirado` (cancelamento por
+  // telefone). Uma segunda semeadura não pode desfazer isso.
+  estado.reservas[1][4] = "expirado";
+  assert.equal(gs.semear_(io).semeadas, 0);
+});
+
+test("planoSemeadura_ ignora submissões de datas passadas", () => {
+  const submissoes = [
+    ["Reserva"],
+    ["2026-09-01 | 08:00-08:45"],   // passado: o lugar já foi consumido
+    ["2026-09-08 | 08:00-08:45"],   // hoje: conta
+    ["2026-09-09 | 08:00-08:45"]    // futuro: conta
+  ];
+  const plano = gs.planoSemeadura_(submissoes, [CAB], "2026-09-08", AGORA);
+  assert.deepEqual(plano.map(l => [l[1], l[2]]), [
+    ["2026-09-08", "08:00-08:45"],
+    ["2026-09-09", "08:00-08:45"]
+  ]);
+});
+
+test("planoSemeadura_ ignora linhas sem reserva legível e abas ilegíveis", () => {
+  const submissoes = [
+    ["Submission Date", "Email", "Reserva"],
+    ["2026-09-01", "a@b.pt", ""],
+    ["2026-09-02", "c@d.pt", "qualquer coisa"],
+    ["2026-09-03", "e@f.pt", "2026-09-09 | 08:00-08:45"]
+  ];
+  assert.equal(gs.planoSemeadura_(submissoes, [CAB], "2026-09-08", AGORA).length, 1);
+  assert.deepEqual(gs.planoSemeadura_(null, [CAB], "2026-09-08", AGORA), []);
+  assert.deepEqual(
+    gs.planoSemeadura_([["Data", "Email"], ["2026-09-01", "a@b.pt"]], [CAB], "2026-09-08", AGORA),
+    []
+  );
+});
+
+test("uma reserva semeada satisfaz-se a si mesma na reconciliação", () => {
+  // Cada linha semeada tem a sua própria submissão, logo o excedente é 0 e
+  // a reconciliação não a liberta — nem passados os 20 minutos.
+  const { io, estado } = ioFalso([CAB], { submissoes: SUBMISSOES_TRES });
+  gs.semear_(io);
+  const submissoes = gs.contarSubmissoes_(SUBMISSOES_TRES, 2);
+  const depois = AGORA + 60 * 60 * 1000;
+  assert.deepEqual(gs.planoReconciliacao_(estado.reservas, submissoes, depois, JANELA), []);
 });
 
 // ===============================

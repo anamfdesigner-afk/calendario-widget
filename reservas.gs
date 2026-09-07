@@ -253,6 +253,95 @@ function planoReconciliacao_(reservas, submissoes, agoraMs, janelaMs) {
 }
 
 // ===============================
+// SEMEADURA A PARTIR DAS SUBMISSÕES
+// ===============================
+// Na instalação a aba Reservas nasce vazia, mas a Form responses já tem
+// reservas futuras vendidas a hóspedes reais. Sem as trazer para o registo,
+// a ocupação em vivo é zero e esses lugares são vendidos OUTRA VEZ —
+// reproduzido: três submissões para um slot de três lugares e o reservar_
+// ainda devolvia "novo" três vezes, seis pequenos-almoços para três lugares.
+//
+// A mesma causa morde do outro lado mais tarde: essas linhas de submissão
+// contam para sempre em contarSubmissoes_, logo o excedente da
+// reconciliação ficaria negativo naquele slot e mascararia órfãs reais para
+// sempre. Uma linha semeada tem a sua própria submissão, logo o excedente
+// dá 0 e as duas metades do problema desaparecem.
+
+// Token determinístico derivado do índice da linha de origem. Tem de
+// satisfazer o ^[A-Za-z0-9-]{8,64}$ do validarPedido_, daí o enchimento a
+// zeros: "sub-1" tinha 5 caracteres e era rejeitado.
+function tokenSemeado_(indice) {
+  var s = String(indice);
+  while (s.length < 6) s = "0" + s;
+  return "sub-" + s;
+}
+
+// Procura um token em QUALQUER estado, ao contrário do linhaDoToken_ que só
+// olha para as activas. É o que torna a semeadura idempotente: o dono pode
+// correr preparar() duas vezes. E não ressuscita uma linha semeada que ele
+// tenha cancelado à mão (mudar `estado` para `expirado`, como o guia
+// autoriza) — uma segunda semeadura não pode desfazer um cancelamento.
+function tokenExiste_(linhas, token) {
+  for (var i = 1; i < (linhas || []).length; i++) {
+    if (String(((linhas[i] || [])[COL_TOKEN])).trim() === token) return true;
+  }
+  return false;
+}
+
+// Que linhas acrescentar à aba Reservas. Só datas >= hoje: uma reserva
+// passada já foi consumida e semeá-la só bloquearia um lugar que ninguém
+// pode usar. Comparação de strings basta — em ISO a ordem lexicográfica é
+// cronológica.
+function planoSemeadura_(submissoes, reservas, hoje, agoraMs) {
+  var out = [];
+  if (!submissoes || !submissoes.length) return out;
+
+  var idx = colunaReserva_(submissoes);
+  // -1 = não sabemos ler a coluna. Semear às cegas não é possível, e semear
+  // a menos é o lado seguro: o pior caso é a instalação não bloquear nada.
+  if (idx < 0) return out;
+
+  for (var i = 1; i < submissoes.length; i++) {
+    var v = normalizarReserva_((submissoes[i] || [])[idx]);
+    if (!FORMATO_RESERVA_COMPLETO.test(v)) continue;
+
+    var partes = v.split(" | ");
+    var data = partes[0];
+    var horario = partes[1];
+    if (data < hoje) continue;
+
+    var token = tokenSemeado_(i);
+    if (tokenExiste_(reservas, token)) continue;
+
+    out.push([token, data, horario, new Date(agoraMs), ESTADO_ACTIVO]);
+  }
+  return out;
+}
+
+// Núcleo da semeadura, com a E/S injetada para ser testável em Node.
+function semear_(io) {
+  var submissoes = io.lerSubmissoes();
+  if (!submissoes || !submissoes.length) return { semeadas: 0 };
+
+  var hoje = normalizarData_(new Date(io.agora()));
+  var plano = planoSemeadura_(submissoes, io.lerReservas(), hoje, io.agora());
+  for (var i = 0; i < plano.length; i++) io.acrescentar(plano[i]);
+  return { semeadas: plano.length };
+}
+
+// Corre a partir do editor. O preparar() já a chama; fica separadamente
+// executável para o caso de a aba das submissões só aparecer depois.
+function semear() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(ESPERA_LOCK_MS)) return "A folha está ocupada. Tente outra vez.";
+  try {
+    return "Reservas semeadas a partir das submissões: " + semear_(ioReal_()).semeadas;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ===============================
 // NÚCLEO DA RESERVA
 // ===============================
 // A lógica toda está aqui, com a E/S injetada (io), para poder ser testada
@@ -470,7 +559,13 @@ function preparar() {
     caps.appendRow(["09:30-10:15", 3]);
     caps.appendRow(["10:15-11:00", 2]);
   }
-  return "Abas prontas.";
+
+  // Só depois de as abas existirem: as reservas futuras que já foram
+  // vendidas têm de entrar no registo, senão os lugares delas aparecem
+  // livres e são vendidos outra vez.
+  var semeadas = semear_(ioReal_()).semeadas;
+
+  return "Abas prontas. Reservas já existentes trazidas para o registo: " + semeadas;
 }
 
 // Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
@@ -507,6 +602,10 @@ if (typeof module !== "undefined") {
     colunaReserva_: colunaReserva_,
     contarSubmissoes_: contarSubmissoes_,
     planoReconciliacao_: planoReconciliacao_,
+    tokenSemeado_: tokenSemeado_,
+    tokenExiste_: tokenExiste_,
+    planoSemeadura_: planoSemeadura_,
+    semear_: semear_,
     reservar_: reservar_,
     // ioReal_ é a E/S real (SpreadsheetApp), normalmente fora do alcance dos
     // testes de unidade. É exportada mesmo assim para pinar, com uma folha
