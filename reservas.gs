@@ -152,30 +152,54 @@ var FORMATO_RESERVA_COMPLETO = /^\d{4}-\d{2}-\d{2}\s*\|\s*\d{2}:\d{2}-\d{2}:\d{2
 // Procura a coluna "Reserva" na Form responses: primeiro pelo cabeçalho,
 // depois por conteúdo. Devolver -1 é o sinal de "não sei ler isto", e quem
 // chama TEM de tratar isso como "não reconciliar nada".
+//
+// O candidato do cabeçalho só é aceite se tiver pelo menos um valor no
+// formato certo. Sem esta validação, uma coluna "Reserva" que existe mas
+// está vazia — p.ex. a integração do JotForm ainda não está mapeada para
+// lá escrever, ou a aba só tem cabeçalho — seria aceite às cegas: toda a
+// contagem de submissões ficaria a zero, toda a reserva antiga pareceria
+// órfã, e a reconciliação libertaria reservas REAIS. Por isso caímos para
+// a rede de segurança por conteúdo, e devolvemos -1 se nem essa encontrar
+// nada — nunca aceitamos uma coluna sem provas de conter reservas.
 function colunaReserva_(linhas) {
   if (!linhas || !linhas.length) return -1;
 
   var cabecalho = linhas[0] || [];
-  for (var c = 0; c < cabecalho.length; c++) {
-    if (/reserva/i.test(String(cabecalho[c] == null ? "" : cabecalho[c]))) return c;
-  }
-
-  // Rede de segurança: a coluna com mais valores no formato certo.
-  var melhor = -1;
-  var melhorContagem = 0;
   var largura = 0;
   for (var i = 0; i < linhas.length; i++) {
     largura = Math.max(largura, (linhas[i] || []).length);
   }
+
+  // Contagem por coluna de valores no formato certo — usada tanto para
+  // validar o candidato do cabeçalho como para a rede de segurança.
+  var contagens = [];
   for (var col = 0; col < largura; col++) {
     var n = 0;
     for (var r = 1; r < linhas.length; r++) {
       var v = normalizarReserva_((linhas[r] || [])[col]);
       if (FORMATO_RESERVA_COMPLETO.test(v)) n++;
     }
-    if (n > melhorContagem) {
-      melhorContagem = n;
-      melhor = col;
+    contagens[col] = n;
+  }
+
+  var candidatoCabecalho = -1;
+  for (var c = 0; c < cabecalho.length; c++) {
+    if (/reserva/i.test(String(cabecalho[c] == null ? "" : cabecalho[c]))) {
+      candidatoCabecalho = c;
+      break;
+    }
+  }
+  if (candidatoCabecalho >= 0 && contagens[candidatoCabecalho] > 0) {
+    return candidatoCabecalho;
+  }
+
+  // Rede de segurança: a coluna com mais valores no formato certo.
+  var melhor = -1;
+  var melhorContagem = 0;
+  for (var col2 = 0; col2 < largura; col2++) {
+    if (contagens[col2] > melhorContagem) {
+      melhorContagem = contagens[col2];
+      melhor = col2;
     }
   }
   return melhorContagem > 0 ? melhor : -1;

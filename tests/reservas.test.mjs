@@ -147,6 +147,22 @@ test("colunaReserva_ devolve -1 quando não há nada reconhecível", () => {
   assert.equal(gs.colunaReserva_([]), -1);
 });
 
+test("colunaReserva_ recusa uma coluna Reserva vazia (integração do JotForm não mapeada)", () => {
+  // O cabeçalho "Reserva" existe, mas nenhuma linha tem lá um valor no
+  // formato certo. Aceitar isto às cegas puxaria a contagem de submissões
+  // a zero e faria a reconciliação libertar reservas reais.
+  const linhas = [
+    ["Submission Date", "Email", "Reserva"],
+    ["2026-09-01", "a@b.pt", ""],
+    ["2026-09-02", "c@d.pt", ""]
+  ];
+  assert.equal(gs.colunaReserva_(linhas), -1);
+});
+
+test("colunaReserva_ devolve -1 para uma aba só com cabeçalho", () => {
+  assert.equal(gs.colunaReserva_([["Submission Date", "Email", "Reserva"]]), -1);
+});
+
 test("contarSubmissoes_ agrupa por valor normalizado", () => {
   const linhas = [
     ["Reserva"],
@@ -332,6 +348,25 @@ test("reservar_ não reconcilia quando as submissões são ilegíveis", () => {
   );
   const r = gs.reservar_(PEDIDO, io);
   assert.equal(r.reservado, false, "sem coluna Reserva não se liberta nada");
+  assert.deepEqual(estado.expiradas, []);
+});
+
+test("reservar_ não reconcilia quando a coluna Reserva existe mas está vazia", () => {
+  const velho = new Date(AGORA - 60 * 60 * 1000);
+  const { io, estado } = ioFalso(
+    [
+      CAB,
+      ["x1", "2026-09-08", "08:45-09:30", velho, "activo"],
+      ["x2", "2026-09-08", "08:45-09:30", velho, "activo"]
+    ],
+    { submissoes: [
+        ["Submission Date", "Email", "Reserva"],
+        ["2026-09-01", "a@b.pt", ""],
+        ["2026-09-02", "c@d.pt", ""]
+      ] }
+  );
+  const r = gs.reservar_(PEDIDO, io);
+  assert.equal(r.reservado, false, "coluna Reserva vazia não pode libertar reservas reais");
   assert.deepEqual(estado.expiradas, []);
 });
 
