@@ -888,15 +888,25 @@ function confirmarWebhook_(params, io) {
 // errada é a resposta de um hóspede.
 var CABECALHO_ID_RESPOSTAS = /submission\s*id/i;
 
-// O destino procura-se em DUAS passagens, e a ordem é que faz a segurança. A
-// primeira exige o nome do widget INTEIRO — `typeA137`, com ou sem o prefixo
-// que a JotForm às vezes lhe põe (`q137_typeA137`). Só quando não existe
-// nenhuma é que se cai para o nome tolerante.
+// O destino procura-se em TRÊS passagens, e a ordem é que faz a segurança.
 //
-// Com uma passagem só (/typeA137|reserva/i) ganhava o primeiro cabeçalho que
-// CONTIVESSE "reserva": uma pergunta chamada "Reserva especial" à esquerda da
-// coluna D passava a ser o destino — e a guarda "só células vazias" preenchia
+// A primeira é o cabeçalho legível: quando o campo do widget tem título no
+// JotForm, a integração escreve `Reserva` em vez do nome interno. Vem à
+// frente porque a integração NÃO renomeia a coluna antiga — deixa a
+// `typeA137` para trás, com as reservas das submissões velhas, e sem esta
+// ordem o dono mudava o nome do campo e a coluna que ele lê ficava na mesma.
+//
+// A segunda exige o nome do widget INTEIRO — `typeA137`, com ou sem o prefixo
+// que a JotForm às vezes lhe põe (`q137_typeA137`). É a folha de hoje, antes
+// de alguém mexer no JotForm.
+//
+// Só quando não existe nenhuma das duas é que se cai para o nome tolerante, e
+// é por isso que as outras estão ANCORADAS. Com uma passagem só
+// (/typeA137|reserva/i) ganhava o primeiro cabeçalho que CONTIVESSE
+// "reserva": uma pergunta chamada "Reserva especial" à esquerda da coluna D
+// passava a ser o destino — e a guarda "só células vazias" preenchia
 // precisamente os hóspedes que tinham deixado essa pergunta em branco.
+var CABECALHO_DESTINO_NOVO = /^reserva$/i;
 var CABECALHO_DESTINO_EXACTO = /^(?:[a-z0-9]+_)?typeA137$/i;
 var CABECALHO_DESTINO_TOLERANTE = /reserva/i;
 
@@ -917,9 +927,16 @@ function colunaSubmissao_(linhas) {
 }
 
 function colunaDestino_(linhas) {
-  var exacta = colunaPorCabecalho_(linhas, CABECALHO_DESTINO_EXACTO);
-  if (exacta >= 0) return exacta;
-  return colunaPorCabecalho_(linhas, CABECALHO_DESTINO_TOLERANTE);
+  var padroes = [
+    CABECALHO_DESTINO_NOVO,
+    CABECALHO_DESTINO_EXACTO,
+    CABECALHO_DESTINO_TOLERANTE
+  ];
+  for (var i = 0; i < padroes.length; i++) {
+    var idx = colunaPorCabecalho_(linhas, padroes[i]);
+    if (idx >= 0) return idx;
+  }
+  return -1;
 }
 
 // O título da coluna encontrada, para o preparar() o DIZER ao dono. Uma
@@ -1096,7 +1113,8 @@ function espelharRespostas_(io, reservas) {
     // exactamente porque falhava sem deixar rasto nenhum.
     console.log("Espelho desligado: na aba \"" + ABA_RESPOSTAS + "\" falta a " +
       "coluna do " + (idxId < 0 ? "id da submissão (cabeçalho tipo " +
-      "\"Submission ID\")" : "destino (cabeçalho tipo \"typeA137\")") +
+      "\"Submission ID\")" : "destino (cabeçalho \"Reserva\", ou o nome " +
+        "interno do campo do widget)") +
       ". A reserva não aparece ao lado do menu; as reservas e os lugares não " +
       "são afectados. Corra o preparar() para ver as duas colunas.");
     return 0;

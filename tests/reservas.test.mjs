@@ -1713,6 +1713,37 @@ test("uma pergunta do formulário chamada 'Reserva…' não rouba o lugar ao typ
   assert.equal(gs.colunaDestino_([["Submission Date", "Reserva"]]), 1);
 });
 
+test("o cabeçalho novo `Reserva` ganha ao `typeA137` deixado para trás", () => {
+  // Dar um título ao campo do widget no JotForm põe um cabeçalho legível na
+  // aba das respostas — mas a integração não renomeia a coluna antiga: deixa
+  // a `typeA137` onde estava, com as reservas das submissões velhas. Se o
+  // `typeA137` continuasse a ganhar, o dono mudava o nome do campo e a coluna
+  // que ele lê ficava exactamente na mesma.
+  const emTransicao = ["Submission Date", "typeA137", "Email", "Reserva", "Submission ID"];
+  assert.equal(gs.colunaDestino_([emTransicao]), 3,
+    "a coluna nova, não a que ficou para trás");
+
+  // E o `typeA137` sozinho continua a ser o destino: é a folha de hoje, antes
+  // de alguém mexer no JotForm. Esta é a metade que não pode quebrar.
+  assert.equal(gs.colunaDestino_([CAB_RESPOSTAS]), 3, "coluna D, como sempre");
+  assert.equal(gs.colunaDestino_([["a", "q137_typeA137"]]), 1);
+});
+
+test("o cabeçalho novo é ANCORADO: 'Reserva especial' não passa por ele", () => {
+  // `^reserva$` e não `/reserva/`: a passagem tolerante — a única que uma
+  // pergunta de hóspede pode roubar — tem de ficar em ÚLTIMO, atrás das duas
+  // exactas.
+  const armadilhaPrimeiro = ["Reserva especial", "typeA137", "Reserva"];
+  assert.equal(gs.colunaDestino_([armadilhaPrimeiro]), 2,
+    "a `Reserva` exacta: nem a armadilha, nem o typeA137");
+
+  assert.equal(gs.colunaDestino_([["Reserva especial", "Email", "typeA137"]]), 2,
+    "sem cabeçalho novo, o typeA137 ainda ganha à armadilha");
+
+  // Espaços em volta não desancoram o nome: o colunaPorCabecalho_ já apara.
+  assert.equal(gs.colunaDestino_([["a", "  Reserva  ", "typeA137"]]), 1);
+});
+
 test("sem coluna, as duas devolvem -1 em vez de adivinharem uma posição", () => {
   // É este -1 que DESLIGA a funcionalidade. Adivinhar seria escrever por cima
   // de respostas de hóspedes.
@@ -1944,7 +1975,7 @@ test("sem as colunas, o espelho fica desligado e DIZ que ficou", () => {
   assert.equal(escreveu, 0);
   assert.deepEqual(estado.escritasRespostas, [], "nada é escrito sem coluna de destino");
   assert.match(registo, /Espelho desligado/);
-  assert.match(registo, /typeA137/);
+  assert.match(registo, /cabeçalho "Reserva"/);
   assert.match(registo, /as reservas e os lugares não são afectados/);
 });
 

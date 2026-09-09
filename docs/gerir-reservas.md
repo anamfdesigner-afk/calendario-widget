@@ -62,7 +62,7 @@ visitas, avise-me.
 
 Pronto. O lugar fica livre para outro hóspede logo a seguir.
 
-**Uma coisa a saber:** se essa reserva já tinha aparecido na coluna `typeA137` da aba
+**Uma coisa a saber:** se essa reserva já tinha aparecido na coluna `Reserva` da aba
 **Form responses**, esse texto fica lá — o programa só preenche células vazias, nunca as
 limpa. Não é engano nem lugar ocupado: **quem manda é a aba `Reservas`**, e lá a linha
 está `expirado`. Se quiser que essa célula fique limpa, diga-me.
@@ -107,7 +107,7 @@ Na aba **Reservas**:
 
 Na aba **Form responses**:
 
-- ❌ não escreva na coluna `typeA137` — é o programa que a preenche
+- ❌ não escreva na coluna `Reserva` — é o programa que a preenche
 - ❌ não lhe mude o título, nem o do `Submission ID`
 - ❌ **não ordene nem apague linhas** — nesta aba as linhas têm de ficar pela
   ordem em que chegaram. Para ver as respostas por outra ordem, use um filtro
@@ -133,6 +133,6 @@ O programa procura as abas e as colunas por estes nomes. Se mudarem, deixa de fu
   **Capacidades**. Tem de ser exactamente `08:00-08:45`.
 - **As colunas `quarto` e `nome` ficam vazias** — as reservas continuam boas; é só a
   identificação que não está a chegar. Avise-me.
-- **A coluna `typeA137` da aba das respostas fica vazia** — as reservas continuam boas
+- **A coluna `Reserva` da aba das respostas fica vazia** — as reservas continuam boas
   e estão todas na aba **Reservas**; é só a cópia que não está a chegar. Avise-me.
 - **Qualquer outra coisa** — não tente corrigir à mão na folha. Diga-me o que vê.
