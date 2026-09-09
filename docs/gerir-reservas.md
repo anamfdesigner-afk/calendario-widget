@@ -38,20 +38,17 @@ automática deixou de chegar. Não é grave e não vende lugares a mais — mas 
 ### A reserva também aparece na aba das respostas
 
 Na aba **Form responses** — a que a JotForm enche com as respostas do
-formulário — a reserva aparece na coluna **`typeA137`**, ao lado das escolhas
+formulário — a reserva aparece na coluna **`Reserva`**, ao lado das escolhas
 de menu do hóspede, no formato `2026-09-08 | 08:45-09:30`.
 
-Essa coluna é preenchida **pelo programa**, sozinha. Não escreva lá à mão: o
-programa só preenche células vazias, por isso o que escrever fica e a reserva
-verdadeira nunca chega a aparecer nessa linha.
+Essa coluna é preenchida **pelo programa**, sozinha, **de 15 em 15 minutos**.
+Não escreva lá à mão: o programa só preenche células vazias, por isso o que
+escrever fica e a reserva verdadeira nunca chega a aparecer nessa linha.
 
-O valor pode demorar um pouco a aparecer — a reserva e a linha da resposta
-chegam à folha por caminhos diferentes, e o programa só as junta **quando
-alguém abre o formulário e escolhe uma data**. É esse o único momento em que
-esta coluna é preenchida: num dia sem ninguém a abrir o formulário, as reservas
-da véspera ficam à espera, e aparecem todas de uma vez assim que o primeiro
-hóspede o abrir. Se uma linha ficar sem reserva depois de o formulário ter tido
-visitas, avise-me.
+O valor pode por isso demorar até 15 minutos a aparecer. A reserva e a linha da
+resposta chegam à folha por caminhos diferentes e é o programa que as junta
+depois, o que não é imediato. Se uma linha ficar sem reserva mais de meia hora
+depois da submissão, avise-me.
 
 ---
 

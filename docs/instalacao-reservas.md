@@ -97,8 +97,8 @@ o programa procura-a por `Form responses`.
 Depois do ponto 8, correr o `preparar` outra vez deve mostrar
 `Segredo do webhook: definido`, o número do formulário, uma data em vez de
 `NUNCA`, e as duas colunas com nome (algo como `Coluna do ID: "Submission ID".
-Coluna da reserva: "typeA137".`) — e é assim que se confirma que tudo ficou
-ligado.
+Coluna da reserva: "Reserva".`), e `Espelho automático: a cada 15 min` depois
+de ter feito o ponto 9 — e é assim que se confirma que tudo ficou ligado.
 
 ## 6. Conferir as capacidades
 
@@ -183,7 +183,7 @@ Três coisas que também deve saber, sem alarme:
   não devolve nada da folha.
 - **"Só responde com lugares livres" é uma garantia desta versão do
   programa.** Se o programa for alterado, a garantia é a da versão nova —
-  e é essa a razão de o ponto 9 existir.
+  e é essa a razão de o ponto 10 existir.
 
 ## 8. Ligar o aviso de submissão (o passo mais importante)
 
@@ -267,7 +267,36 @@ senha do ponto 8.1 escrita de maneira diferente nas duas metades. **Avise-me**
 Para apagar a reserva de teste, mude o `estado` dessa linha para
 `expirado` (ver o Aviso no fim).
 
-## 9. Se mais tarde alterar o programa
+## 9. Ligar a cópia automática na aba das respostas (uma vez)
+
+A reserva aparece na aba **Form responses**, na coluna **`Reserva`**, ao lado
+das escolhas de menu do hóspede. Para essa cópia se fazer sozinha, corra
+**uma vez** uma função a partir do editor:
+
+1. No editor, na lista de funções em cima, escolha **`instalarGatilhoEspelho`**.
+2. Clique **Executar**.
+3. **Vai aparecer um ecrã de autorização.** É normal, e é a razão de este
+   passo existir: esta função usa um serviço da Google que o resto do programa
+   não usava (agendar tarefas), e a autorização que deu na instalação não
+   cobre isso. Aceite, como fez no ponto 5.
+4. No registo deve aparecer:
+
+   ```
+   Espelho automático ligado: corre a cada 15 minutos.
+   ```
+
+A partir daí a reserva aparece na coluna `Reserva` ao fim de, no máximo, 15
+minutos, **sem ninguém ter de abrir o formulário**.
+
+Correr esta função outra vez não faz mal: ela apaga o agendamento anterior
+antes de criar o novo, por isso nunca fica com dois a correr. Para desligar,
+corra **`removerGatilhoEspelho`**.
+
+Depois disto, o `preparar` passa a terminar com `Espelho automático: a cada 15
+min`. Enquanto disser `EM FALTA`, a cópia faz-se só quando alguém abre o
+formulário — as reservas e os lugares não são afectados de qualquer maneira.
+
+## 10. Se mais tarde alterar o programa
 
 Alterar as capacidades **não** exige republicar: são lidas da folha a cada
 pedido.

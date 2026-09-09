@@ -1308,6 +1308,8 @@ function livroFalso(abas = {}, opcoes = {}) {
   const propriedades = Object.assign({}, opcoes.propriedades);
   const folhas = {};
   const chamadas = { tryLock: [], releaseLock: 0, flush: 0 };
+  const gatilhos = (opcoes.gatilhos || []).map(
+    nome => ({ getHandlerFunction: () => nome, feito: null }));
 
   function fazerFolha(nome, linhas) {
     const dados = linhas.map(l => l.slice());
@@ -1412,10 +1414,34 @@ function livroFalso(abas = {}, opcoes = {}) {
         getProperty: k => (k in propriedades ? propriedades[k] : null),
         setProperty: (k, v) => { propriedades[k] = v; }
       })
+    },
+    // Os gatilhos do projeto. O `opcoes.gatilhos` recebe nomes de função —
+    // basta isso, porque é pelo nome da função que o script reconhece os
+    // seus. O builder devolve-se a ele próprio para o encadeado
+    // newTrigger().timeBased().everyMinutes().create() poder ser lido no fim.
+    ScriptApp: {
+      getProjectTriggers: () => gatilhos.slice(),
+      deleteTrigger: g => {
+        const i = gatilhos.indexOf(g);
+        if (i >= 0) gatilhos.splice(i, 1);
+        else throw new Error("deleteTrigger num gatilho que não é do projeto");
+      },
+      newTrigger: nome => {
+        const feito = { funcao: nome, tipo: null, minutos: null };
+        const builder = {
+          timeBased: () => { feito.tipo = "tempo"; return builder; },
+          everyMinutes: n => { feito.minutos = n; return builder; },
+          create: () => {
+            gatilhos.push({ getHandlerFunction: () => nome, feito });
+            return feito;
+          }
+        };
+        return builder;
+      }
     }
   };
 
-  return { stubs, folhas, formatos, propriedades, chamadas };
+  return { stubs, folhas, formatos, propriedades, chamadas, gatilhos };
 }
 
 function carregarCom(stubs) {
@@ -1994,8 +2020,11 @@ test("sem reservas por espelhar, nem se lê a aba das respostas", () => {
 });
 
 test("preparar() nomeia as duas colunas da aba das respostas", () => {
+  // Com o gatilho instalado: é o que uma instalação COMPLETA reporta, e é
+  // isso que o `doesNotMatch(EM FALTA)` lá abaixo mede.
   const livro = livroFalso(
-    { "Form responses": [CAB_RESPOSTAS] }, { propriedades: CONFIGURADO });
+    { "Form responses": [CAB_RESPOSTAS] },
+    { propriedades: CONFIGURADO, gatilhos: ["espelhoAgendado"] });
   const gsComStub = carregarCom(livro.stubs);
 
   const msg = gsComStub.preparar();
@@ -3094,4 +3123,138 @@ test("ioReal_ lê o segredo e o formulário das propriedades do script", () => {
   io.gravarSubmissoesVistas("6000000000000000001");
   assert.equal(guardadas.submissoesConfirmadas, "6000000000000000001");
   assert.equal(io.submissoesVistas(), "6000000000000000001");
+});
+
+// ===============================
+// ESPELHO AUTOMÁTICO (GATILHO DE TEMPO)
+// ===============================
+// O espelho corria só no doGet, e por isso a reserva mais recente ficava sem
+// aparecer ao lado do menu até alguém abrir o formulário e escolher uma data.
+// O gatilho de tempo é o que o torna automático — e é a única maneira: uma
+// reserva só se pode espelhar DEPOIS de a integração do Sheets ter escrito a
+// linha da submissão, o que não aconteceu ainda quando o webhook confirma.
+
+test("gatilhosDoEspelho_ reconhece os seus pelo nome da função, e mais nenhum", () => {
+  const alheios = [
+    { getHandlerFunction: () => "doPost" },
+    { getHandlerFunction: () => "outraCoisaQualquer" }
+  ];
+  const meu = { getHandlerFunction: () => "espelhoAgendado" };
+
+  assert.deepEqual(gs.gatilhosDoEspelho_(alheios.concat([meu])), [meu]);
+  assert.deepEqual(gs.gatilhosDoEspelho_(alheios), [],
+    "um gatilho de outra função não é nosso para apagar");
+  assert.deepEqual(gs.gatilhosDoEspelho_([]), []);
+  assert.deepEqual(gs.gatilhosDoEspelho_(undefined), [], "projeto sem gatilhos nenhuns");
+});
+
+test("instalarGatilhoEspelho cria UM gatilho de 15 minutos para o espelhoAgendado", () => {
+  const livro = livroFalso({}, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const msg = comRegisto(() => gsComStub.instalarGatilhoEspelho());
+
+  assert.equal(livro.gatilhos.length, 1);
+  assert.deepEqual(livro.gatilhos[0].feito,
+    { funcao: "espelhoAgendado", tipo: "tempo", minutos: 15 });
+  assert.match(msg, /15 minutos/);
+});
+
+test("instalar duas vezes deixa UM gatilho, não dois", () => {
+  // Correr a instalação outra vez é o gesto natural de quem não se lembra se
+  // já a correu. Sem apagar os anteriores, cada corrida duplicava as
+  // execuções — e o orçamento de gatilhos do Apps Script é por dia.
+  const livro = livroFalso({}, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
+
+  comRegisto(() => gsComStub.instalarGatilhoEspelho());
+  const segunda = comRegisto(() => gsComStub.instalarGatilhoEspelho());
+
+  assert.equal(livro.gatilhos.length, 1, "o anterior foi apagado antes de criar o novo");
+  assert.match(segunda, /1 gatilho/, "e a mensagem DIZ que apagou o anterior");
+});
+
+test("instalarGatilhoEspelho não apaga o gatilho de outra função", () => {
+  const livro = livroFalso({}, { propriedades: CONFIGURADO, gatilhos: ["outraCoisa"] });
+  const gsComStub = carregarCom(livro.stubs);
+
+  comRegisto(() => gsComStub.instalarGatilhoEspelho());
+
+  assert.equal(livro.gatilhos.length, 2);
+  assert.ok(livro.gatilhos.some(g => g.getHandlerFunction() === "outraCoisa"),
+    "o gatilho alheio ficou onde estava");
+});
+
+test("removerGatilhoEspelho apaga os seus e diz quantos", () => {
+  const livro = livroFalso(
+    {}, { propriedades: CONFIGURADO, gatilhos: ["espelhoAgendado", "outraCoisa"] });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const msg = comRegisto(() => gsComStub.removerGatilhoEspelho());
+
+  assert.deepEqual(livro.gatilhos.map(g => g.getHandlerFunction()), ["outraCoisa"]);
+  assert.match(msg, /1/);
+
+  // E sem nenhum para apagar, dizê-lo em vez de fingir que apagou.
+  const msgVazio = comRegisto(() => gsComStub.removerGatilhoEspelho());
+  assert.match(msgVazio, /não havia|Não havia/);
+});
+
+test("espelhoAgendado escreve a reserva na aba das respostas sem nenhum GET", () => {
+  // É o ponto todo da funcionalidade: sem ninguém abrir o formulário.
+  const livro = livroFalso({
+    "Reservas": reservasComSubmissao(),
+    "Form responses": respostasFalsas([{ nome: "Ana", id: ID_ANA }])
+  }, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
+
+  const registo = comRegisto(() => gsComStub.espelhoAgendado());
+
+  assert.equal(
+    livro.folhas["Form responses"].dados[1][IDX_DESTINO], "2026-09-08 | 08:45-09:30");
+  assert.match(registo, /1/, "e diz quantas células planeou");
+});
+
+test("espelhoAgendado cala-se quando não há nada para espelhar", () => {
+  // 96 execuções por dia. Uma linha de registo por cada seria afogar o
+  // registo de execução, que é onde o dono procura os problemas a sério.
+  const livro = livroFalso({
+    "Reservas": [CAB],
+    "Form responses": respostasFalsas([{ nome: "Ana", id: ID_ANA }])
+  }, { propriedades: CONFIGURADO });
+  const gsComStub = carregarCom(livro.stubs);
+
+  assert.equal(comRegisto(() => gsComStub.espelhoAgendado()), "");
+});
+
+test("um espelho que estoura no gatilho não vai a plicar por email de 15 em 15 minutos", () => {
+  // Uma excepção não apanhada num gatilho faz o Apps Script mandar um email
+  // ao dono a CADA falha. De 15 em 15 minutos, isso é uma caixa de correio
+  // inutilizável — e o problema (o espelho) não é urgente: as reservas e os
+  // lugares não dependem dele.
+  const livro = livroFalso({
+    "Reservas": reservasComSubmissao(),
+    "Form responses": respostasFalsas([{ nome: "Ana", id: ID_ANA }])
+  }, { propriedades: CONFIGURADO, escritaExplosiva: "Form responses" });
+  const gsComStub = carregarCom(livro.stubs);
+
+  let registo;
+  assert.doesNotThrow(() => { registo = comRegisto(() => gsComStub.espelhoAgendado()); });
+  assert.match(registo, /falhou/);
+  assert.match(registo, /15/, "diz quando volta a tentar");
+});
+
+test("preparar() diz se o espelho automático está ligado", () => {
+  const semGatilho = livroFalso(
+    { "Form responses": [CAB_RESPOSTAS] }, { propriedades: CONFIGURADO });
+  const msgSem = carregarCom(semGatilho.stubs).preparar();
+  assert.match(msgSem, /Espelho automático: EM FALTA/);
+  assert.match(msgSem, /instalarGatilhoEspelho/, "e diz o que correr para o ligar");
+
+  const comGatilho = livroFalso(
+    { "Form responses": [CAB_RESPOSTAS] },
+    { propriedades: CONFIGURADO, gatilhos: ["espelhoAgendado"] });
+  const msgCom = carregarCom(comGatilho.stubs).preparar();
+  assert.match(msgCom, /Espelho automático: a cada 15 min/);
+  assert.doesNotMatch(msgCom, /EM FALTA/);
 });

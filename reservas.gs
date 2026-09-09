@@ -1128,6 +1128,93 @@ function espelharRespostas_(io, reservas) {
 }
 
 // ===============================
+// ESPELHO AUTOMÁTICO (GATILHO DE TEMPO)
+// ===============================
+// O espelho acima corre no doGet, e só lá. Enquanto foi o único caminho, a
+// reserva mais recente ficava sem aparecer ao lado do menu até alguém abrir o
+// formulário e escolher uma data — para o dono, indistinguível de estar
+// partido, porque funciona, mas mais tarde.
+//
+// Um gatilho de tempo é a ÚNICA maneira de o tornar automático, e não é uma
+// escolha de gosto: uma reserva só se pode espelhar depois de a integração do
+// Sheets ter escrito a linha da submissão na aba das respostas, e essa escrita
+// é independente do webhook. Quando o webhook confirma, a linha ainda não está
+// lá — mesmo fora do lock, espelhar no caminho do webhook seria quase sempre
+// planear zero células. O que falta é uma passagem MAIS TARDE, e é isto.
+//
+// O preço, para ficar dito: este gatilho pede um âmbito novo
+// (`script.scriptapp`), o que obriga o dono a autorizar o script outra vez.
+var FUNCAO_GATILHO_ESPELHO = "espelhoAgendado";
+var MINUTOS_GATILHO_ESPELHO = 15;
+
+// Os gatilhos DESTE projeto que são nossos, reconhecidos pelo nome da função.
+// Separado do ScriptApp para ser testável, e a separação não é cosmética: é o
+// filtro que impede o instalar de apagar um gatilho de outra função que o dono
+// tenha posto no mesmo projeto.
+function gatilhosDoEspelho_(gatilhos) {
+  var meus = [];
+  for (var i = 0; i < (gatilhos || []).length; i++) {
+    if (gatilhos[i].getHandlerFunction() === FUNCAO_GATILHO_ESPELHO) meus.push(gatilhos[i]);
+  }
+  return meus;
+}
+
+// O que o gatilho corre. NÃO pega no lock, pela mesma razão do doGet: a
+// escrita é sempre o mesmo valor na mesma célula, numa coluna que mais ninguém
+// escreve, e o escreverRespostas reconfirma a linha antes de lhe tocar. Pegar
+// no lock de 15 em 15 minutos era roubá-lo ao caminho da reserva, que só o
+// espera 3,5 s e falha FECHADO quando não o consegue.
+function espelhoAgendado() {
+  try {
+    var celulas = espelharRespostas_(ioReal_());
+    // Só quando escreveu. São 96 execuções por dia: uma linha por cada era
+    // afogar o registo de execução, que é onde o dono procura os problemas a
+    // sério.
+    if (celulas) {
+      console.log("Espelho automático: " + celulas + " célula(s) planeada(s) na aba \"" +
+        ABA_RESPOSTAS + "\".");
+    }
+  } catch (err) {
+    // Uma excepção não apanhada num gatilho faz o Apps Script mandar um email
+    // ao dono a cada falha. De 15 em 15 minutos isso é uma caixa de correio
+    // inutilizável — e isto não é urgente: as reservas e os lugares não
+    // dependem do espelho, e a passagem seguinte volta a tentar.
+    console.log("Espelho automático falhou (volta a tentar dentro de " +
+      MINUTOS_GATILHO_ESPELHO + " min; as reservas e os lugares não são " +
+      "afectados): " + err);
+  }
+}
+
+function apagarGatilhosEspelho_() {
+  var meus = gatilhosDoEspelho_(ScriptApp.getProjectTriggers());
+  for (var i = 0; i < meus.length; i++) ScriptApp.deleteTrigger(meus[i]);
+  return meus.length;
+}
+
+// Corre UMA vez a partir do editor, como o preparar(). Apaga os anteriores
+// ANTES de criar o novo: correr isto outra vez é o gesto natural de quem não
+// se lembra se já o correu, e sem o apagar cada corrida duplicava as
+// execuções para sempre.
+function instalarGatilhoEspelho() {
+  var apagados = apagarGatilhosEspelho_();
+  ScriptApp.newTrigger(FUNCAO_GATILHO_ESPELHO)
+    .timeBased()
+    .everyMinutes(MINUTOS_GATILHO_ESPELHO)
+    .create();
+  return relatar_("Espelho automático ligado: corre a cada " +
+    MINUTOS_GATILHO_ESPELHO + " minutos." +
+    (apagados ? " Apagado(s) " + apagados + " gatilho(s) anterior(es) desta função." : ""));
+}
+
+function removerGatilhoEspelho() {
+  var apagados = apagarGatilhosEspelho_();
+  return relatar_(apagados
+    ? "Espelho automático desligado: apagado(s) " + apagados + " gatilho(s). A reserva " +
+      "volta a aparecer na aba \"" + ABA_RESPOSTAS + "\" só quando alguém abrir o formulário."
+    : "Não havia nenhum gatilho do espelho para apagar.");
+}
+
+// ===============================
 // NÚCLEO DA RESERVA
 // ===============================
 // A lógica toda está aqui, com a E/S injetada (io), para poder ser testada
@@ -1738,12 +1825,22 @@ function preparar_() {
         : "");
   }
 
+  // E se o espelho corre SOZINHO. Sem gatilho, a reserva só aparece quando
+  // alguém abre o formulário — que funciona, mais tarde, e é por isso que
+  // precisa de ser dito: é o estado mais fácil de confundir com "está bom".
+  var gatilho = ". Espelho automático: " +
+    (gatilhosDoEspelho_(ScriptApp.getProjectTriggers()).length
+      ? "a cada " + MINUTOS_GATILHO_ESPELHO + " min"
+      : "EM FALTA (corra instalarGatilhoEspelho uma vez, e autorize; sem ele a " +
+        "reserva só aparece na aba \"" + ABA_RESPOSTAS + "\" quando alguém abrir o " +
+        "formulário)");
+
   return "Abas prontas. Segredo do webhook: " +
     (io.segredo() ? "definido" : "EM FALTA") +
     ". Formulário esperado: " + (io.formIdEsperado() ? io.formIdEsperado() : "EM FALTA") +
     ". Último webhook recebido: " + (ultimo ? ultimo : "NUNCA") +
     (ultimo ? "" : " (enquanto for NUNCA, nenhum lugar é libertado)") +
-    espelho + ".";
+    espelho + gatilho + ".";
 }
 
 // Apaga as linhas do teste de concorrência. Existe para que ninguém tenha
@@ -1808,6 +1905,10 @@ if (typeof module !== "undefined") {
     normalizarId_: normalizarId_,
     planoRespostas_: planoRespostas_,
     espelharRespostas_: espelharRespostas_,
+    gatilhosDoEspelho_: gatilhosDoEspelho_,
+    espelhoAgendado: espelhoAgendado,
+    instalarGatilhoEspelho: instalarGatilhoEspelho,
+    removerGatilhoEspelho: removerGatilhoEspelho,
     reservar_: reservar_,
     preparar: preparar,
     doGet: doGet,
