@@ -27,6 +27,9 @@ body {
 h2, h3 {
   margin: 0 0 10px;
   font-size: 16px;
+  /* Sem negrito, por escolha do dono. Tem de ser explícito: o browser
+     põe os <h2>/<h3> em negrito por omissão. */
+  font-weight: normal;
 }
 
 #datePicker {
@@ -95,7 +98,10 @@ h2, h3 {
    =============================== */
 #estado {
   margin-top: 24px;
-  font-weight: bold;
+  /* Declarado em vez de omitido: o tema do formulário injeta CSS dentro
+     do iframe do widget. O horário escolhido continua em negrito — é o
+     que, com o verde, mostra qual foi escolhido. */
+  font-weight: normal;
 }
 
 #debug {
