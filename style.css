@@ -9,7 +9,9 @@
 }
 
 body {
-  font-family: Arial, sans-serif;
+  /* Lato, a letra do formulário (.form-all usa "Lato, sans-serif").
+     O <link> das Google Fonts está no index.html. */
+  font-family: "Lato", Arial, sans-serif;
   padding: 16px;
   margin: 0;
   background: transparent;
@@ -28,6 +30,8 @@ h2, h3 {
 }
 
 #datePicker {
+  /* Os <input> não herdam a letra do body: é preciso dizê-lo. */
+  font-family: inherit;
   padding: 8px;
   font-size: 14px;
   border: 1px solid #bbb;
